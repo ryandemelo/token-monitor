@@ -5,12 +5,12 @@
 ## Install and run (requires Node.js >= 24)
 
 ```sh
-npx github:ryandemelo/token-monitor collect   # scan local agent logs into ~/.token-monitor/
-npx github:ryandemelo/token-monitor report    # terminal report
-npx github:ryandemelo/token-monitor html      # self-contained dashboard -> report.html
+npx @ryandemelo/token-monitor collect   # scan local agent logs into ~/.token-monitor/
+npx @ryandemelo/token-monitor report    # terminal report
+npx @ryandemelo/token-monitor html      # self-contained dashboard -> report.html
 ```
 
-Or persistent install: `npm install -g github:ryandemelo/token-monitor`, then use `token-monitor <command>`.
+Or persistent install: `npm install -g @ryandemelo/token-monitor`, then use `token-monitor <command>`.
 
 ## Commands
 

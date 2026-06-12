@@ -8,11 +8,11 @@ Requires Node.js ≥ 24 (uses built-in `node:sqlite`). No other dependencies.
 
 ```sh
 # one-off, no install
-npx github:ryandemelo/token-monitor collect
-npx github:ryandemelo/token-monitor report
+npx @ryandemelo/token-monitor collect
+npx @ryandemelo/token-monitor report
 
 # or persistent
-npm install -g github:ryandemelo/token-monitor
+npm install -g @ryandemelo/token-monitor
 token-monitor collect && token-monitor report
 ```
 

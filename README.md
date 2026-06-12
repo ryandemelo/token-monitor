@@ -29,12 +29,12 @@ Where the tokens go (activity share of input+output)
 Requires Node.js ≥ 24 (uses the built-in `node:sqlite` — zero runtime dependencies).
 
 ```sh
-npx github:ryandemelo/token-monitor collect   # scan local agent logs
-npx github:ryandemelo/token-monitor report    # activity breakdown, personas, recommendations
-npx github:ryandemelo/token-monitor html      # self-contained dashboard -> report.html
+npx @ryandemelo/token-monitor collect   # scan local agent logs
+npx @ryandemelo/token-monitor report    # activity breakdown, personas, recommendations
+npx @ryandemelo/token-monitor html      # self-contained dashboard -> report.html
 ```
 
-Persistent install: `npm install -g github:ryandemelo/token-monitor`, then `token-monitor <command>`. For development: clone, `npm install && npm test`.
+Persistent install: `npm install -g @ryandemelo/token-monitor`, then `token-monitor <command>`. For development: clone, `npm install && npm test`.
 
 ### Or let your coding agent install it
 
@@ -90,7 +90,7 @@ Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads o
 The lead hosts one config file anywhere (gist, internal wiki, S3) and sends one line — pasteable by the dev, an MDM/onboarding script, or their coding agent:
 
 ```sh
-npx github:ryandemelo/token-monitor init --from https://example.com/team-config.json
+npx @ryandemelo/token-monitor init --from https://example.com/team-config.json
 ```
 
 ```jsonc
@@ -178,7 +178,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [ ] Adapters: Aider, OpenCode, Windsurf (needs a contributor with Windsurf — #12)
 - [ ] VS Code-family extension: status-bar cost + dashboard webview (#13)
 - [ ] Org-level cross-check via provider usage APIs
-- [ ] npm publish
+- [x] npm publish: `npx @ryandemelo/token-monitor`
 
 ## Integrity & threat model
 
