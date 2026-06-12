@@ -33,6 +33,12 @@ Steps:
 
 Redact real transcripts before turning them into fixtures: keep the structure, replace content.
 
+Adapters for IDE stores (Cursor, Antigravity) read SQLite via the built-in `node:sqlite`; copy the db (+ `-wal`) to a scratch dir before opening — the IDE may hold a lock. If the store mixes usage data with credentials (Cursor does), whitelist exact keys/prefixes and add a test that plants a canary credential and asserts it cannot reach adapter output.
+
+## The VS Code-family extension
+
+`extension/` is a separate npm package (own `package.json`, CommonJS, `@types/vscode`). It must stay a thin UI over the CLI: all parsing lives in the CLI, and anything touching data belongs in `extension/src/bridge.ts`, which is `vscode`-free and e2e-tested against the real built CLI (`cd extension && npm test`; build the root first). `npm run package` produces the `.vsix`; CI builds and uploads it as an artifact.
+
 ## Conventions
 
 - `npm test` must pass; CI runs Node 24 + 25 on Linux and macOS.

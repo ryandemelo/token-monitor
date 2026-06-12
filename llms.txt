@@ -12,6 +12,8 @@ npx @ryandemelo/token-monitor html      # self-contained dashboard -> report.htm
 
 Or persistent install: `npm install -g @ryandemelo/token-monitor`, then use `token-monitor <command>`.
 
+IDE users: a VS Code-family extension (VS Code, Cursor, Windsurf, Antigravity) shows the status-bar token/cost and the dashboard — `.vsix` attached to GitHub releases, source in `extension/`.
+
 ## Commands
 
 - `collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]` — parse local logs into SQLite (idempotent, safe to re-run)
