@@ -7,6 +7,7 @@ import { renderReport, renderTeamReport } from './report.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
 import { syncFindings } from './followthrough.js';
+import { enrichFindings } from './recommendations.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml, renderTeamHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
@@ -71,7 +72,14 @@ function buildSignedExportJson(
   const ex = buildExport(events, days);
   const persona = assignPersona(ex.overall);
   const signed = signObject(
-    { ...ex, persona, recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)] },
+    {
+      ...ex,
+      persona,
+      recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)],
+      // Evidence is aggregate-only by construction: session ids, dates, token
+      // counts and $ estimates — never prompts or code.
+      recommendationDetails: enrichFindings(events, ex.overall, days),
+    },
     keyDirFor(dbPath),
   );
   return JSON.stringify(signed, null, 2);

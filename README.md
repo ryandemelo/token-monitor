@@ -172,6 +172,17 @@ token-monitor analyze --llm
 
 No API key management: it reuses your existing agent CLI and its subscription. The payload is the same aggregates-only data as `report --json` (token counts, ratios, tool names, project basenames — never prompts or code). It does leave your machine via that agent's provider, so skip `--llm` if even project names are sensitive.
 
+## Recommendations: evidence + savings
+
+Every threshold-fired recommendation answers "why should I believe this and what is it worth": it cites the worst 3 sessions that triggered it (session ids, dates, token counts — aggregate-only, never content) and estimates the $/month saved if the metric hit its target, priced from **your own model mix** and the price table (`~` when estimated prices or a tier assumption are involved):
+
+```
+→ 43% of spend is premium-model tokens on exploration/conversation turns. …  ≈ $8060/mo
+    worst: db0a7d17 (procurement, 2026-05-26, 1.8M premium on exploration/chat) · …
+```
+
+These show up in `report`, `analyze`, the HTML dashboard, and ride along in signed exports (`recommendationDetails`).
+
 ## Follow-through
 
 Recommendations are tracked, not just printed. The first time one fires, its target metric is recorded as a baseline; every later report re-measures and shows the delta:

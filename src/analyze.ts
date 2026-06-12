@@ -6,7 +6,8 @@ import { assignPersona } from './personas.js';
 import { structuredFindings } from './followthrough.js';
 import type { Activity } from './types.js';
 import { ACTIVITIES } from './types.js';
-import { table, section, fmtTokens } from './report.js';
+import { table, section, fmtTokens, renderEnrichedRecs } from './report.js';
+import { enrichFindings } from './recommendations.js';
 
 /**
  * Deeper, session-level analysis. The report answers "where do tokens go";
@@ -322,6 +323,11 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
         ]),
       ),
     );
+  }
+  const recs = enrichFindings(events, m, days);
+  if (recs.length) {
+    out.push(`\n${'\x1b[1m'}\x1b[32mRecommendations (evidence-cited)\x1b[0m`);
+    out.push(...renderEnrichedRecs(recs));
   }
   out.push(
     `\n\x1b[2mAdd --llm to get prioritized recommendations from your local agent CLI (claude/gemini/codex).\x1b[0m\n`,
