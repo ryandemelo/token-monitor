@@ -3,6 +3,8 @@ import { computeMetrics, groupBy } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
+import type { ExportV1 } from './team.js';
+import { mergeMetrics, rollupByDiscipline, dominantActivity } from './team.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -115,5 +117,66 @@ export function renderReport(events: StoredEvent[], opts: { days: number }): str
   for (const r of recs) out.push(`  ${YELLOW}→${RESET} ${r}`);
 
   out.push(`\n${DIM}Cost figures marked ~ use placeholder prices — edit src/pricing.ts.${RESET}\n`);
+  return out.join('\n');
+}
+
+export function renderTeamReport(exports: ExportV1[], team: Record<string, string>): string {
+  const out: string[] = [];
+  const overall = mergeMetrics(exports.map((e) => e.overall));
+
+  out.push(section(`Team Token Monitor — ${exports.length} member export(s)`));
+  out.push(
+    table(
+      ['Members', 'Sessions', 'Tokens', 'Cache hit', 'Rework', 'Est. cost'],
+      [[
+        String(new Set(exports.map((e) => e.user)).size),
+        String(overall.sessions),
+        fmtTokens(overall.spendTokens),
+        (overall.cacheHitRatio * 100).toFixed(0) + '%',
+        (overall.reworkRatio * 100).toFixed(0) + '%',
+        fmtCost(overall),
+      ]],
+    ),
+  );
+
+  out.push(section('By discipline'));
+  const rollups = rollupByDiscipline(exports, team);
+  out.push(
+    table(
+      ['Discipline', 'Members', 'Tokens', 'Cost', 'Cache', 'Rework', 'Think:code', 'Top activity', 'Persona'],
+      rollups.map(({ discipline, users, metrics: m }) => {
+        const p = assignPersona(m);
+        return [
+          discipline,
+          users.join(', '),
+          fmtTokens(m.spendTokens),
+          (m.costEstimated ? '~' : '') + '$' + m.costUsd.toFixed(2),
+          (m.cacheHitRatio * 100).toFixed(0) + '%',
+          (m.reworkRatio * 100).toFixed(0) + '%',
+          m.thinkToCodeRatio.toFixed(2),
+          dominantActivity(m),
+          `${p.emoji} ${p.name}`,
+        ];
+      }),
+    ),
+  );
+
+  out.push(section('Activity mix by discipline'));
+  for (const { discipline, metrics: m } of rollups) {
+    out.push(`  ${BOLD}${discipline}${RESET}`);
+    for (const a of ACTIVITIES) {
+      if (m.byActivity[a].tokens === 0) continue;
+      out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);
+    }
+  }
+
+  const persona = assignPersona(overall);
+  out.push(section(`Team persona: ${persona.emoji} ${persona.name}`));
+  out.push(`  ${persona.description}\n`);
+  out.push(`${BOLD}${GREEN}Recommendations${RESET}`);
+  for (const r of [...persona.recommendations, ...generalRecommendations(overall)]) {
+    out.push(`  ${YELLOW}→${RESET} ${r}`);
+  }
+  out.push('');
   return out.join('\n');
 }

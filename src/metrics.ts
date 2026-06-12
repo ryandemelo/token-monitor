@@ -17,6 +17,8 @@ export interface Metrics {
   costEstimated: boolean;
   costUnpricedTokens: number;
   cacheHitRatio: number;
+  /** Tokens spent on code/test turns after the first failure in a session. */
+  reworkTokens: number;
   /** Share of spend after the first test failure in a session (fix loops). */
   reworkRatio: number;
   errorEvents: number;
@@ -99,6 +101,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     costEstimated,
     costUnpricedTokens: unpriced,
     cacheHitRatio: cacheRead + input + cacheCreate ? cacheRead / (cacheRead + input + cacheCreate) : 0,
+    reworkTokens,
     reworkRatio: spendTokens ? reworkTokens / spendTokens : 0,
     errorEvents,
     byActivity,
