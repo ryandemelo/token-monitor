@@ -9,6 +9,8 @@ import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import type { EnrichedRec } from './recommendations.js';
 import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
+import type { TrendRow, TrendVerdict } from './trends.js';
+import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -16,6 +18,7 @@ const RESET = '\x1b[0m';
 const CYAN = '\x1b[36m';
 const YELLOW = '\x1b[33m';
 const GREEN = '\x1b[32m';
+const RED = '\x1b[31m';
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -152,6 +155,56 @@ export function renderReport(
   }
 
   out.push(`\n${DIM}Cost figures marked ~ use placeholder prices — edit src/pricing.ts.${RESET}\n`);
+  return out.join('\n');
+}
+
+const TREND_COLOR: Record<TrendVerdict, string> = {
+  better: GREEN,
+  worse: RED,
+  neutral: '',
+  flat: DIM,
+};
+
+function trendDelta(r: TrendRow): string {
+  const d = r.now - r.prev;
+  const arrow = verdictOf(r) === 'flat' ? '→' : d > 0 ? '↑' : '↓';
+  const color = TREND_COLOR[verdictOf(r)];
+  return `${color}${arrow} ${d >= 0 ? '+' : '−'}${fmtTrendValue(r, Math.abs(d))}${color ? RESET : ''}`;
+}
+
+export function renderTrend(
+  current: StoredEvent[],
+  previous: StoredEvent[],
+  days: number,
+): string {
+  const out: string[] = [];
+  out.push(section(`Trend — last ${days} days vs the ${days} before`));
+  if (previous.length === 0) {
+    out.push(`  ${DIM}No events in the previous window — trends appear once two windows of data exist.${RESET}`);
+    return out.join('\n');
+  }
+  const rows = trendRows(computeMetrics(current), computeMetrics(previous));
+  out.push(
+    table(
+      ['Metric', 'Previous', 'Now', 'Change'],
+      rows.map((r) => [r.label, fmtTrendValue(r, r.prev), fmtTrendValue(r, r.now), trendDelta(r)]),
+    ),
+  );
+  const movers = projectMovers(current, previous);
+  if (movers.length) {
+    out.push(`\n  ${BOLD}Top project movers (spend)${RESET}`);
+    out.push(
+      table(
+        ['Project', 'Previous', 'Now', 'Change'],
+        movers.map((p) => [
+          p.project.length > 28 ? p.project.slice(0, 27) + '…' : p.project,
+          fmtTokens(p.prev),
+          fmtTokens(p.now),
+          `${p.delta >= 0 ? '+' : '−'}${fmtTokens(Math.abs(p.delta))}`,
+        ]),
+      ),
+    );
+  }
   return out.join('\n');
 }
 

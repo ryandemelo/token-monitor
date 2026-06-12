@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { ADAPTERS } from './adapters/index.js';
 import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
-import { renderReport, renderTeamReport } from './report.js';
+import { renderReport, renderTeamReport, renderTrend } from './report.js';
+import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
 import { syncFindings } from './followthrough.js';
@@ -21,7 +22,7 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
-  token-monitor report  [--days <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
@@ -53,6 +54,8 @@ Integrity:
 Options:
   --source    one of: ${Object.keys(ADAPTERS).join(', ')} (default: all)
   --days      report window in days (default: 30)
+  --trend     compare against the previous same-length window (terminal report;
+              the HTML dashboard always includes the trend when data exists)
   --project   filter to one project
   --json      machine-readable output (for team aggregation)
   --team      member map: flat (\`alice: frontend\`) or two-level YAML
@@ -106,6 +109,7 @@ async function main() {
       days: { type: 'string', default: '30' },
       project: { type: 'string' },
       json: { type: 'boolean', default: false },
+      trend: { type: 'boolean', default: false },
       team: { type: 'string' },
       out: { type: 'string', default: 'report.html' },
       llm: { type: 'boolean', default: false },
@@ -245,17 +249,24 @@ Signing fingerprint (send to your team lead for keys.json):
     }
   } else if (cmd === 'report') {
     const days = Number(values.days) || 30;
-    const events = loadEvents(db, { days, project: values.project, source: values.source });
+    const filters = { project: values.project, source: values.source };
     if (values.json) {
-      console.log(buildSignedExportJson(db, days, values.db, { project: values.project, source: values.source }));
+      console.log(buildSignedExportJson(db, days, values.db, filters));
     } else {
+      // With --trend, load both windows in one query and partition, so the
+      // current slice and the comparison share the same boundary.
+      const { current: events, previous } = values.trend
+        ? splitWindow(loadEvents(db, { days: days * 2, ...filters }), days)
+        : { current: loadEvents(db, { days, ...filters }), previous: [] };
       // Follow-through baselines only on unfiltered runs, so --project/--source
       // slices can't pollute them.
       const follow =
         !values.project && !values.source && events.length > 0
           ? syncFindings(db, computeMetrics(events))
           : undefined;
-      console.log(renderReport(events, { days, follow }));
+      let out = renderReport(events, { days, follow });
+      if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
+      console.log(out);
     }
   } else if (cmd === 'analyze') {
     const days = Number(values.days) || 30;
@@ -279,9 +290,9 @@ Signing fingerprint (send to your team lead for keys.json):
     }
   } else if (cmd === 'html') {
     const days = Number(values.days) || 30;
-    const events = loadEvents(db, { days });
+    const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);
     const follow = events.length > 0 ? syncFindings(db, computeMetrics(events)) : undefined;
-    writeFileSync(values.out, renderHtml(events, { days, follow }));
+    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous }));
     console.log(`Wrote ${values.out} (${events.length} turns, last ${days} days). Open it in a browser.`);
   } else {
     console.error(`Unknown command "${cmd}"\n`);
