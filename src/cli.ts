@@ -9,6 +9,7 @@ import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
 import { syncFindings } from './followthrough.js';
 import { enrichFindings } from './recommendations.js';
+import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml, renderTeamHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
@@ -30,6 +31,7 @@ Usage:
   token-monitor init    --from <url-or-path>
   token-monitor push    [--db <path>]
   token-monitor schedule [--hours <n>] [--remove]
+  token-monitor reconcile [--provider anthropic|openai] [--days <n>] [--db <path>]
   token-monitor fingerprint [--db <path>]
 
 Commands:
@@ -44,6 +46,9 @@ Commands:
             and (if configured) install the collection schedule
   push      Sign and deliver an export to the team destination from config
   schedule  Install/remove a recurring collect+push job (launchd/cron)
+  reconcile Cross-check local totals against the provider's usage API (org
+            lead only — needs ANTHROPIC_ADMIN_KEY or OPENAI_ADMIN_KEY in the
+            environment; the key is never stored). Local > API = red flag.
   fingerprint  Print this machine's signing-key fingerprint (for keyring enrollment)
 
 Integrity:
@@ -118,6 +123,7 @@ async function main() {
       keys: { type: 'string' },
       by: { type: 'string' },
       html: { type: 'string' },
+      provider: { type: 'string' },
       from: { type: 'string' },
       hours: { type: 'string' },
       remove: { type: 'boolean', default: false },
@@ -288,6 +294,22 @@ Signing fingerprint (send to your team lead for keys.json):
       }
       process.exit(runLlm(buildLlmPrompt(events, days), agent));
     }
+  } else if (cmd === 'reconcile') {
+    const provider = values.provider ?? 'anthropic';
+    if (!PROVIDERS[provider]) {
+      console.error(`Unknown provider "${provider}". Supported: ${Object.keys(PROVIDERS).join(', ')}`);
+      process.exit(1);
+    }
+    // Daily buckets cap the usage APIs at 31 days per request.
+    let days = Number(values.days) || 30;
+    if (days > 31) {
+      console.error(`--days capped at 31 (the usage APIs report at most 31 daily buckets); using 31.`);
+      days = 31;
+    }
+    const events = loadEvents(db, { days });
+    const { rows, breach } = await reconcile(provider, events, days);
+    console.log(renderReconcile(provider, rows, days));
+    if (breach) process.exit(1);
   } else if (cmd === 'html') {
     const days = Number(values.days) || 30;
     const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);

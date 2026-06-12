@@ -213,6 +213,7 @@ token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]
+token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
 ```
 
 ## Contributing
@@ -228,7 +229,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] IDE coverage: Cursor, Antigravity, Copilot Chat adapters
 - [ ] Adapters: Aider, OpenCode, Windsurf (needs a contributor with Windsurf — #12)
 - [x] VS Code-family extension: status-bar cost + dashboard webview
-- [ ] Org-level cross-check via provider usage APIs
+- [x] Org-level cross-check via provider usage APIs: `reconcile`
 - [x] npm publish: `npx @ryandemelo/token-monitor`
 
 ## Integrity & threat model
@@ -246,7 +247,18 @@ token-monitor merge exports/*.json --verify --keys keys.json
 
 `--verify` rejects any export modified after signing or unsigned; `--keys` additionally rejects exports signed by a key not enrolled for that username (impersonation).
 
-**What this does not cover — read before relying on it:** a developer controls their own machine, so someone determined to game metrics could edit the *source logs* before collection. Signing detects tampering after export, not dishonest inputs. The planned mitigation is reconciling team totals against the provider's billing/usage APIs (roadmap) — gamed numbers won't reconcile. Treat these metrics as a coaching instrument, not a performance-review weapon; the latter invites exactly the gaming this can't stop.
+**What this does not cover — read before relying on it:** a developer controls their own machine, so someone determined to game metrics could edit the *source logs* before collection. Signing detects tampering after export, not dishonest inputs. The mitigation is `reconcile` (below) — gamed numbers won't reconcile against the provider's billing data. Treat these metrics as a coaching instrument, not a performance-review weapon; the latter invites exactly the gaming this can't stop.
+
+### Reconcile against provider usage APIs
+
+`reconcile` cross-checks the local database against the provider's own usage report:
+
+```sh
+ANTHROPIC_ADMIN_KEY=sk-ant-admin... token-monitor reconcile --provider anthropic
+OPENAI_ADMIN_KEY=...               token-monitor reconcile --provider openai
+```
+
+Per model it shows local tokens, org-billed tokens, and a coverage %. The local db covers one machine while the API covers the whole org, so **local ≤ API is the expected state** — a model whose local total *exceeds* what the org was billed is the red flag (inflated or double-counted logs; exit code 1, so it's CI-able). The admin key is org-lead-only, read from the environment for that one run, and never stored, logged, or exported. Window is capped at 31 days (the APIs' daily-bucket limit). Supported: the Anthropic Admin API and the OpenAI Usage API. Both follow the providers' documented schemas and are exercised against mock servers in the test suite; live-org runs need an admin key, so report any schema drift you hit in an issue.
 
 ## Privacy
 
