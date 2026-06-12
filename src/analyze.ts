@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import type { StoredEvent } from './store.js';
-import { computeMetrics, groupBy } from './metrics.js';
+import { computeMetrics, groupBy, contextGrowthOf, parseTools, CACHE_TTL_MS } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
 import { structuredFindings } from './followthrough.js';
@@ -27,6 +27,11 @@ export interface SessionStat {
   fixIterations: number;
   /** Mean context fed per turn (input + cache read/creation) — bloat proxy. */
   avgContextTokens: number;
+  /** Late-half avg context / early half; 0 when the session is too short. */
+  contextGrowth: number;
+  /** Turns resuming after a gap past the cache TTL, and what they re-paid. */
+  coldRestartTurns: number;
+  coldRestartTokens: number;
   durationMin: number;
   dominant: Activity;
 }
@@ -35,14 +40,22 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
   const out: SessionStat[] = [];
   for (const [sessionId, evs] of groupBy(events, 'session_id')) {
     let spend = 0, cost = 0, errors = 0, fixes = 0, context = 0;
+    let coldTurns = 0, coldTokens = 0;
     const actTokens = Object.fromEntries(ACTIVITIES.map((a) => [a, 0])) as Record<Activity, number>;
     let prev: string | undefined;
+    let prevTs: number | undefined;
     for (const e of evs) {
       spend += e.input_tokens + e.output_tokens;
       cost += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
       if (e.is_error) errors++;
       if (prev === 'testing' && e.activity === 'coding') fixes++;
       prev = e.activity;
+      const ts = Date.parse(e.ts);
+      if (prevTs !== undefined && ts - prevTs > CACHE_TTL_MS) {
+        coldTurns++;
+        coldTokens += e.input_tokens + e.cache_creation_tokens;
+      }
+      prevTs = ts;
       context += e.input_tokens + e.cache_read_tokens + e.cache_creation_tokens;
       if (ACTIVITIES.includes(e.activity as Activity)) {
         actTokens[e.activity as Activity] += e.input_tokens + e.output_tokens;
@@ -60,6 +73,9 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
       errorTurns: errors,
       fixIterations: fixes,
       avgContextTokens: Math.round(context / evs.length),
+      contextGrowth: contextGrowthOf(evs)?.ratio ?? 0,
+      coldRestartTurns: coldTurns,
+      coldRestartTokens: coldTokens,
       durationMin: Math.max(0, Math.round((last - first) / 60_000)),
       dominant: ACTIVITIES.reduce((b, a) => (actTokens[a] > actTokens[b] ? a : b)),
     });
@@ -74,22 +90,28 @@ export interface ToolStat {
   /** Share of this tool's turns that hit an error. Errors are attributed to
    *  every tool in the failing turn — an upper bound, not exact blame. */
   errorRate: number;
+  /** Tokens on turns re-running this tool right after a turn where it errored. */
+  retryTokens: number;
 }
 
 export function computeToolStats(events: StoredEvent[]): ToolStat[] {
-  const map = new Map<string, { turns: number; errorTurns: number }>();
-  for (const e of events) {
-    let tools: string[];
-    try {
-      tools = JSON.parse(e.tools);
-    } catch {
-      continue;
-    }
-    for (const t of new Set(tools)) {
-      const s = map.get(t) ?? { turns: 0, errorTurns: 0 };
-      s.turns++;
-      if (e.is_error) s.errorTurns++;
-      map.set(t, s);
+  const map = new Map<string, { turns: number; errorTurns: number; retryTokens: number }>();
+  const stat = (t: string) => {
+    let s = map.get(t);
+    if (!s) map.set(t, (s = { turns: 0, errorTurns: 0, retryTokens: 0 }));
+    return s;
+  };
+  for (const [, evs] of groupBy(events, 'session_id')) {
+    let prevErrTools: Set<string> | undefined;
+    for (const e of evs) {
+      const tools = new Set(parseTools(e.tools));
+      for (const t of tools) {
+        const s = stat(t);
+        s.turns++;
+        if (e.is_error) s.errorTurns++;
+        if (prevErrTools?.has(t)) s.retryTokens += e.input_tokens + e.output_tokens;
+      }
+      prevErrTools = e.is_error ? tools : undefined;
     }
   }
   return [...map.entries()]
@@ -101,6 +123,8 @@ export interface DeepAnalysis {
   expensiveSessions: SessionStat[];
   fixLoopSessions: SessionStat[];
   contextHeavySessions: SessionStat[];
+  bloatTrendSessions: SessionStat[];
+  coldRestartSessions: SessionStat[];
   toolStats: ToolStat[];
 }
 
@@ -115,6 +139,14 @@ export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
     contextHeavySessions: stats
       .filter((s) => s.turns >= 10)
       .sort((a, b) => b.avgContextTokens - a.avgContextTokens)
+      .slice(0, 8),
+    bloatTrendSessions: stats
+      .filter((s) => s.contextGrowth >= 2)
+      .sort((a, b) => b.contextGrowth - a.contextGrowth)
+      .slice(0, 8),
+    coldRestartSessions: stats
+      .filter((s) => s.coldRestartTurns > 0)
+      .sort((a, b) => b.coldRestartTokens - a.coldRestartTokens)
       .slice(0, 8),
     toolStats: computeToolStats(events).slice(0, 15),
   };
@@ -141,6 +173,8 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
     errorTurns: s.errorTurns,
     fixIterations: s.fixIterations,
     avgContextTokens: s.avgContextTokens,
+    contextGrowth: round(s.contextGrowth, 1),
+    coldRestartTokens: s.coldRestartTokens,
     durationMin: s.durationMin,
     dominant: s.dominant,
   });
@@ -154,6 +188,10 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
       cacheHitRatio: round(m.cacheHitRatio),
       reworkRatio: round(m.reworkRatio),
       thinkToCodeRatio: round(m.thinkToCodeRatio),
+      contextBloatShare: round(m.contextBloatShare),
+      coldRestartShare: round(m.coldRestartShare),
+      premiumWasteShare: round(m.premiumWasteShare),
+      retryShare: round(m.retryShare),
       activityShares: Object.fromEntries(
         ACTIVITIES.filter((a) => m.byActivity[a].tokens > 0).map((a) => [a, round(m.byActivity[a].share)]),
       ),
@@ -178,9 +216,11 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
     expensiveSessions: deep.expensiveSessions.map(slim),
     fixLoopSessions: deep.fixLoopSessions.map(slim),
     contextHeavySessions: deep.contextHeavySessions.map(slim),
+    bloatTrendSessions: deep.bloatTrendSessions.map(slim),
+    coldRestartSessions: deep.coldRestartSessions.map(slim),
     toolErrorRates: deep.toolStats
       .filter((t) => t.errorRate > 0.05 && t.turns >= 20)
-      .map((t) => ({ tool: t.tool, turns: t.turns, errorRate: round(t.errorRate, 2) })),
+      .map((t) => ({ tool: t.tool, turns: t.turns, errorRate: round(t.errorRate, 2), retryTokens: t.retryTokens })),
     ruleBasedFindings: structuredFindings(m).map((f) => f.key),
   };
 }
@@ -188,7 +228,7 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.
 
-Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.
+Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.
 
 Analyze the data and respond in markdown:
 1. **Top 3 interventions**, prioritized by expected token/cost savings. For each: the evidence (cite specific numbers/projects/sessions from the data), the concrete workflow change, and which metric will move if it works.
@@ -234,13 +274,52 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
     out.push(`\n${'\x1b[1m'}Context-heavy sessions (avg tokens fed per turn)${'\x1b[0m'}`);
     out.push(table(headers, deep.contextHeavySessions.map(sessRow)));
   }
+  if (deep.bloatTrendSessions.length) {
+    out.push(`\n${'\x1b[1m'}Context bloat trend (late-half context vs early half)${'\x1b[0m'}`);
+    out.push(
+      table(
+        ['Project', 'Source', 'Turns', 'Ctx/turn', 'Growth', 'Span', 'Dominant'],
+        deep.bloatTrendSessions.map((s) => [
+          s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
+          s.source,
+          String(s.turns),
+          fmtTokens(s.avgContextTokens),
+          s.contextGrowth.toFixed(1) + '×',
+          s.durationMin + 'm',
+          s.dominant,
+        ]),
+      ),
+    );
+  }
+  if (deep.coldRestartSessions.length) {
+    out.push(`\n${'\x1b[1m'}Cold restarts (turns resuming after the ~5-min cache TTL)${'\x1b[0m'}`);
+    out.push(
+      table(
+        ['Project', 'Source', 'Turns', 'Cold turns', 'Re-paid tokens', 'Span'],
+        deep.coldRestartSessions.map((s) => [
+          s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
+          s.source,
+          String(s.turns),
+          String(s.coldRestartTurns),
+          fmtTokens(s.coldRestartTokens),
+          s.durationMin + 'm',
+        ]),
+      ),
+    );
+  }
   const failing = deep.toolStats.filter((t) => t.errorRate > 0.05 && t.turns >= 20);
   if (failing.length) {
     out.push(`\n${'\x1b[1m'}Tool error rates (errors attributed to all tools in the failing turn)${'\x1b[0m'}`);
     out.push(
       table(
-        ['Tool', 'Turns', 'Error turns', 'Error rate'],
-        failing.map((t) => [t.tool, String(t.turns), String(t.errorTurns), (t.errorRate * 100).toFixed(1) + '%']),
+        ['Tool', 'Turns', 'Error turns', 'Error rate', 'Retry cost'],
+        failing.map((t) => [
+          t.tool,
+          String(t.turns),
+          String(t.errorTurns),
+          (t.errorRate * 100).toFixed(1) + '%',
+          fmtTokens(t.retryTokens),
+        ]),
       ),
     );
   }

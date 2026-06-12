@@ -154,6 +154,10 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     spendTokens: 0, costUsd: 0, costEstimated: false, costUnpricedTokens: 0,
     cacheHitRatio: 0, reworkTokens: 0, reworkRatio: 0, errorEvents: 0,
     byActivity, byModel, thinkToCodeRatio: 0,
+    trendSessions: 0, bloatedSessions: 0, contextBloatShare: 0,
+    coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0,
+    premiumWasteTokens: 0, premiumWasteShare: 0,
+    retryTokens: 0, retryShare: 0,
   };
   for (const m of list) {
     out.events += m.events;
@@ -169,6 +173,13 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.costUnpricedTokens += m.costUnpricedTokens;
     out.reworkTokens += m.reworkTokens ?? 0;
     out.errorEvents += m.errorEvents;
+    // `?? 0` throughout: pre-0.6 exports don't carry the signal fields.
+    out.trendSessions += m.trendSessions ?? 0;
+    out.bloatedSessions += m.bloatedSessions ?? 0;
+    out.coldRestartTurns += m.coldRestartTurns ?? 0;
+    out.coldRestartTokens += m.coldRestartTokens ?? 0;
+    out.premiumWasteTokens += m.premiumWasteTokens ?? 0;
+    out.retryTokens += m.retryTokens ?? 0;
     for (const a of ACTIVITIES) {
       byActivity[a].tokens += m.byActivity[a]?.tokens ?? 0;
       byActivity[a].events += m.byActivity[a]?.events ?? 0;
@@ -185,6 +196,11 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   const denom = out.cacheReadTokens + out.inputTokens + out.cacheCreationTokens;
   out.cacheHitRatio = denom ? out.cacheReadTokens / denom : 0;
   out.reworkRatio = out.spendTokens ? out.reworkTokens / out.spendTokens : 0;
+  out.contextBloatShare = out.trendSessions ? out.bloatedSessions / out.trendSessions : 0;
+  const freshPaid = out.inputTokens + out.cacheCreationTokens;
+  out.coldRestartShare = freshPaid ? out.coldRestartTokens / freshPaid : 0;
+  out.premiumWasteShare = out.spendTokens ? out.premiumWasteTokens / out.spendTokens : 0;
+  out.retryShare = out.spendTokens ? out.retryTokens / out.spendTokens : 0;
   out.thinkToCodeRatio =
     (byActivity.thinking.tokens + byActivity.exploration.tokens) / (byActivity.coding.tokens || 1);
   return out;

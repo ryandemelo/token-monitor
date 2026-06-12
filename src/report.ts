@@ -97,6 +97,9 @@ export function renderReport(
   out.push(
     `\n  ${DIM}rework ratio ${(m.reworkRatio * 100).toFixed(1)}%  ·  think:code ${m.thinkToCodeRatio.toFixed(2)}  ·  ${m.errorEvents} turns hit tool errors${RESET}`,
   );
+  out.push(
+    `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${RESET}`,
+  );
 
   out.push(section('By project'));
   const projRows = [...groupBy(events, 'project').entries()]

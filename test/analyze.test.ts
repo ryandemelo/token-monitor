@@ -37,6 +37,35 @@ test('computeToolStats attributes errors to tools in failing turns', () => {
   assert.equal(read?.errorRate, 0.5);
 });
 
+test('computeToolStats: retry cost accrues to the tool that re-ran after its error', () => {
+  const stats = computeToolStats([
+    makeStored({ session_id: 'r', ts: '2026-06-01T00:00:01Z', tools: '["Bash"]', is_error: 1, input_tokens: 100, output_tokens: 0 }),
+    makeStored({ session_id: 'r', ts: '2026-06-01T00:00:02Z', tools: '["Bash","Read"]', input_tokens: 500, output_tokens: 100 }),
+    // new session: no carry-over from the error above
+    makeStored({ session_id: 'other', ts: '2026-06-01T00:00:03Z', tools: '["Bash"]', input_tokens: 900, output_tokens: 0 }),
+  ]);
+  assert.equal(stats.find((t) => t.tool === 'Bash')?.retryTokens, 600);
+  assert.equal(stats.find((t) => t.tool === 'Read')?.retryTokens, 0);
+});
+
+test('computeSessionStats: context growth and cold restarts per session', () => {
+  const evs = Array.from({ length: 8 }, (_, i) =>
+    makeStored({
+      session_id: 'g',
+      // 10-minute gaps: every turn after the first is a cold restart
+      ts: `2026-06-01T0${Math.floor((i * 10) / 60)}:${String((i * 10) % 60).padStart(2, '0')}:00Z`,
+      input_tokens: i < 4 ? 100 : 5000,
+      output_tokens: 0,
+    }),
+  );
+  const [s] = computeSessionStats(evs);
+  assert.ok(Math.abs(s.contextGrowth - 50) < 1e-9);
+  assert.equal(s.coldRestartTurns, 7);
+  assert.equal(s.coldRestartTokens, 100 * 3 + 5000 * 4);
+  // the 5-min-apart fix-loop session has no cold restarts (gap must exceed the TTL)
+  assert.equal(computeSessionStats(fixLoopSession)[0].coldRestartTurns, 0);
+});
+
 test('deepAnalysis surfaces fix-loop sessions and sorts expensive first', () => {
   const events = [
     ...fixLoopSession,
