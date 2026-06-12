@@ -1,5 +1,8 @@
 # token-monitor
 
+[![CI](https://github.com/ryandemelo/token-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ryandemelo/token-monitor/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Measure how effectively your team spends AI coding-agent tokens — locally, with zero setup.
 
 Most token dashboards tell you *how much* you spent. token-monitor tells you *what you spent it on* — separating thinking and defining from actual coding, testing, and shipping — and what to change. It parses the session logs that Claude Code, Gemini CLI, and Codex already write to your machine. No API keys, no server, no telemetry.
@@ -26,11 +29,12 @@ Where the tokens go (activity share of input+output)
 Requires Node.js ≥ 24 (uses the built-in `node:sqlite` — zero runtime dependencies).
 
 ```sh
-git clone https://github.com/<you>/token-monitor && cd token-monitor
-npm install && npm run build
+git clone https://github.com/ryandemelo/token-monitor && cd token-monitor
+npm install && npm run build && npm link
 
-node dist/cli.js collect    # scan local agent logs into ~/.token-monitor/
-node dist/cli.js report     # activity breakdown, personas, recommendations
+token-monitor collect    # scan local agent logs into ~/.token-monitor/
+token-monitor report     # activity breakdown, personas, recommendations
+token-monitor html       # self-contained dashboard -> report.html
 ```
 
 ## What it measures
@@ -71,32 +75,56 @@ Adapters skip gracefully when a tool isn't installed.
 
 ## Team usage
 
-Each developer runs `collect` + `report --json` locally; the JSON contains aggregate metrics only (no prompts, no code), so it's safe to share for a team rollup. A `team.yaml` discipline mapping and merge command are on the roadmap.
+Each developer exports locally; the JSON contains aggregate metrics only (no prompts, no code, no file paths beyond project basenames), so it's safe to share:
+
+```sh
+# each developer
+token-monitor collect && token-monitor report --json > $(whoami).json
+
+# team lead
+cat > team.yaml <<'EOF'
+alice: frontend
+bob: backend
+carol: data
+EOF
+token-monitor merge alice.json bob.json carol.json --team team.yaml
+```
+
+The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill.
+
+## Follow-through
+
+Recommendations are tracked, not just printed. The first time one fires, its target metric is recorded as a baseline; every later report re-measures and shows the delta:
+
+```
+Recommendation         Metric         Baseline  Now   Since       Status
+high-rework            reworkRatio    24%       11%   2026-06-01  ✅ resolved
+premium-model-overuse  premiumShare   99%       97%   2026-06-12  — tracking
+```
+
+Resolved findings re-open automatically if the metric regresses.
 
 ## CLI
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex] [--db <path>]
 token-monitor report  [--days 30] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor html    [--out report.html] [--days 30] [--db <path>]
+token-monitor merge   <export.json>... [--team team.yaml] [--json]
 ```
 
-## Contributing an adapter
+## Contributing
 
-The most valuable contribution: support for another agent CLI (Aider, OpenCode, Cursor…).
-
-1. Add `src/adapters/<name>.ts` exporting a function that parses the tool's local logs into `UsageEvent[]` (see `src/types.ts` — per-turn tokens, tool names, shell commands for activity classification).
-2. Register it in `src/adapters/index.ts`.
-3. Adapters must return zero events with a `note` when the tool isn't installed.
-
-The classifier (`src/classify.ts`) already recognizes common tool names across vendors; extend its sets if yours differ.
+The most valuable contribution: an adapter for another agent CLI (Aider, OpenCode, Cursor…). See [CONTRIBUTING.md](CONTRIBUTING.md) for the adapter guide, fixtures, and conventions. `npm test` runs the suite; CI covers Node 24/25 on Linux + macOS.
 
 ## Roadmap
 
-- [ ] `team.yaml` discipline mapping (frontend/backend/data/QA) + `merge` command for team rollups
-- [ ] Static HTML dashboard
-- [ ] Follow-through tracking: store recommendations with a baseline, re-measure the delta next period
+- [x] Team rollups: `merge` command + `team.yaml` discipline mapping
+- [x] Self-contained HTML dashboard
+- [x] Follow-through tracking: baseline on first firing, delta on every later report
 - [ ] Adapters: Aider, OpenCode, Cursor
 - [ ] Org-level cross-check via provider usage APIs
+- [ ] npm publish
 
 ## Privacy
 
