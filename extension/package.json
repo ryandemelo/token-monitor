@@ -1,0 +1,81 @@
+{
+  "name": "token-monitor-vscode",
+  "displayName": "Token Monitor",
+  "description": "Status-bar token/cost for the current project plus the token-monitor dashboard, for VS Code, Cursor, Windsurf, and Antigravity.",
+  "version": "0.5.0",
+  "publisher": "ryandemelo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryandemelo/token-monitor.git",
+    "directory": "extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "tokens",
+    "ai",
+    "cost",
+    "claude",
+    "copilot",
+    "cursor"
+  ],
+  "main": "./dist/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "tokenMonitor.openDashboard",
+        "title": "Token Monitor: Open Dashboard"
+      },
+      {
+        "command": "tokenMonitor.refresh",
+        "title": "Token Monitor: Collect & Refresh"
+      }
+    ],
+    "configuration": {
+      "title": "Token Monitor",
+      "properties": {
+        "tokenMonitor.command": {
+          "type": "string",
+          "default": "npx -y @ryandemelo/token-monitor",
+          "scope": "machine",
+          "description": "Command used to invoke the token-monitor CLI. Machine-scoped so workspaces cannot override it."
+        },
+        "tokenMonitor.days": {
+          "type": "number",
+          "default": 30,
+          "description": "Report window in days for the status bar and dashboard."
+        },
+        "tokenMonitor.autoCollect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `collect` before each refresh so the numbers include the latest sessions."
+        },
+        "tokenMonitor.refreshMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "How often the status bar refreshes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.7.0"
+  }
+}

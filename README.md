@@ -83,6 +83,10 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 
 Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads only composer/bubble keys — never the auth entries that live in the same database.
 
+## IDE extension
+
+[`extension/`](extension/) ships a VS Code-family extension (works in VS Code, Cursor, Windsurf, Antigravity): status-bar tokens/cost for the current project and the dashboard in a webview, both powered by the CLI. Grab the `.vsix` from the latest release (or CI artifacts) and install via *Extensions: Install from VSIX…*
+
 ## Team usage
 
 ### Remote rollout (lead → team)
@@ -176,7 +180,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] Follow-through tracking: baseline on first firing, delta on every later report
 - [x] IDE coverage: Cursor, Antigravity, Copilot Chat adapters
 - [ ] Adapters: Aider, OpenCode, Windsurf (needs a contributor with Windsurf — #12)
-- [ ] VS Code-family extension: status-bar cost + dashboard webview (#13)
+- [x] VS Code-family extension: status-bar cost + dashboard webview
 - [ ] Org-level cross-check via provider usage APIs
 - [x] npm publish: `npx @ryandemelo/token-monitor`
 
