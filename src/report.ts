@@ -3,8 +3,8 @@ import { computeMetrics, groupBy } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
-import type { ExportV1 } from './team.js';
-import { mergeMetrics, rollupByDiscipline, dominantActivity } from './team.js';
+import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
+import { mergeMetrics, rollupExports, dominantActivity, displayName } from './team.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 
@@ -150,7 +150,13 @@ export function renderReport(
   return out.join('\n');
 }
 
-export function renderTeamReport(exports: ExportV1[], team: Record<string, string>): string {
+export function renderTeamReport(
+  exports: SignedExport[],
+  config: TeamConfig,
+  opts: { by?: RollupAxis; keyring?: Record<string, string> } = {},
+): string {
+  const by = opts.by ?? 'discipline';
+  const axisLabel = by === 'team' ? 'Team' : 'Discipline';
   const out: string[] = [];
   const overall = mergeMetrics(exports.map((e) => e.overall));
 
@@ -159,7 +165,7 @@ export function renderTeamReport(exports: ExportV1[], team: Record<string, strin
     table(
       ['Members', 'Sessions', 'Tokens', 'Cache hit', 'Rework', 'Est. cost'],
       [[
-        String(new Set(exports.map((e) => e.user)).size),
+        String(new Set(exports.map((e) => displayName(e, opts.keyring))).size),
         String(overall.sessions),
         fmtTokens(overall.spendTokens),
         (overall.cacheHitRatio * 100).toFixed(0) + '%',
@@ -169,15 +175,15 @@ export function renderTeamReport(exports: ExportV1[], team: Record<string, strin
     ),
   );
 
-  out.push(section('By discipline'));
-  const rollups = rollupByDiscipline(exports, team);
+  out.push(section(`By ${by}`));
+  const rollups = rollupExports(exports, config, by, opts.keyring);
   out.push(
     table(
-      ['Discipline', 'Members', 'Tokens', 'Cost', 'Cache', 'Rework', 'Think:code', 'Top activity', 'Persona'],
-      rollups.map(({ discipline, users, metrics: m }) => {
+      [axisLabel, 'Members', 'Tokens', 'Cost', 'Cache', 'Rework', 'Think:code', 'Top activity', 'Persona'],
+      rollups.map(({ group, users, metrics: m }) => {
         const p = assignPersona(m);
         return [
-          discipline,
+          group,
           users.join(', '),
           fmtTokens(m.spendTokens),
           (m.costEstimated ? '~' : '') + '$' + m.costUsd.toFixed(2),
@@ -191,9 +197,9 @@ export function renderTeamReport(exports: ExportV1[], team: Record<string, strin
     ),
   );
 
-  out.push(section('Activity mix by discipline'));
-  for (const { discipline, metrics: m } of rollups) {
-    out.push(`  ${BOLD}${discipline}${RESET}`);
+  out.push(section(`Activity mix by ${by}`));
+  for (const { group, metrics: m } of rollups) {
+    out.push(`  ${BOLD}${group}${RESET}`);
     for (const a of ACTIVITIES) {
       if (m.byActivity[a].tokens === 0) continue;
       out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);

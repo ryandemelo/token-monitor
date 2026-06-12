@@ -6,6 +6,8 @@ import { assignPersona, generalRecommendations } from './personas.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import { fmtTokens } from './report.js';
+import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
+import { mergeMetrics, rollupExports, displayName } from './team.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
   thinking: '#8b7ff5',
@@ -93,10 +95,36 @@ export function renderHtml(
           .join('')}</table>`
       : '';
 
+  return pageShell(
+    `token-monitor — last ${opts.days} days`,
+    `<h1>token-monitor <span class="muted">— last ${opts.days} days · generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')}</span></h1>
+<div class="cards">${cards}</div>
+
+<h2>Where the tokens go</h2>
+${stackedBar(m)}
+<div class="legend">${legend}</div>
+<p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
+
+<h2>Projects</h2>
+<table><tr><th>Project</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Persona</th></tr>${projRows}</table>
+
+<h2>Models</h2>
+<table><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr>${modelRows}</table>
+
+<div class="persona">
+  <h3>${persona.emoji} ${esc(persona.name)}</h3>
+  <div class="muted">${esc(persona.description)}</div>
+  <ul class="recs">${recs.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+</div>
+${followSection}`,
+  );
+}
+
+function pageShell(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>token-monitor — last ${opts.days} days</title>
+<title>${esc(title)}</title>
 <style>
   :root { color-scheme: dark; }
   body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; background:#14171d; color:#e6e9ef; max-width: 1080px; margin: 2rem auto; padding: 0 1rem; }
@@ -120,26 +148,55 @@ export function renderHtml(
   .st-resolved { color:#5dc98a; } .st-regressing { color:#e88f68; } .st-improving { color:#9fd45d; }
   footer { margin:2.5rem 0 1rem; font-size:.8rem; color:#717a8a; }
 </style></head><body>
-<h1>token-monitor <span class="muted">— last ${opts.days} days · generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')}</span></h1>
+${body}
+<footer>Generated locally by <a href="https://github.com/ryandemelo/token-monitor">token-monitor</a>. Costs marked ~ use placeholder prices. No data leaves your machine.</footer>
+</body></html>`;
+}
+
+/** Org dashboard for merged member exports — the HTML face of `merge`. */
+export function renderTeamHtml(
+  exports: SignedExport[],
+  config: TeamConfig,
+  opts: { by?: RollupAxis; keyring?: Record<string, string> } = {},
+): string {
+  const by = opts.by ?? 'discipline';
+  const overall = mergeMetrics(exports.map((e) => e.overall));
+  const rollups = rollupExports(exports, config, by, opts.keyring);
+  const persona = assignPersona(overall);
+  const recs = [...persona.recommendations, ...generalRecommendations(overall)];
+  const members = new Set(exports.map((e) => displayName(e, opts.keyring)));
+
+  const cards = [
+    ['Members', String(members.size)],
+    ['Sessions', String(overall.sessions)],
+    ['Spend tokens', fmtTokens(overall.spendTokens)],
+    ['Cache hit', pct(overall.cacheHitRatio)],
+    ['Rework', pct(overall.reworkRatio)],
+    ['Est. cost', cost(overall)],
+  ]
+    .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+    .join('');
+
+  const axisLabel = by === 'team' ? 'Team' : 'Discipline';
+  const rollupRows = rollups
+    .map(({ group, users, metrics: m }) => {
+      const p = assignPersona(m);
+      return `<tr><td>${esc(group)}</td><td>${esc(users.join(', '))}</td><td>${stackedBar(m)}</td><td class="num">${fmtTokens(m.spendTokens)}</td><td class="num">${cost(m)}</td><td class="num">${pct(m.cacheHitRatio)}</td><td class="num">${pct(m.reworkRatio)}</td><td class="num">${m.thinkToCodeRatio.toFixed(2)}</td><td>${p.emoji} ${esc(p.name)}</td></tr>`;
+    })
+    .join('');
+
+  return pageShell(
+    `token-monitor team — ${members.size} member(s)`,
+    `<h1>token-monitor team <span class="muted">— ${exports.length} export(s), ${members.size} member(s)</span></h1>
 <div class="cards">${cards}</div>
 
-<h2>Where the tokens go</h2>
-${stackedBar(m)}
-<div class="legend">${legend}</div>
-<p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
-
-<h2>Projects</h2>
-<table><tr><th>Project</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Persona</th></tr>${projRows}</table>
-
-<h2>Models</h2>
-<table><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr>${modelRows}</table>
+<h2>By ${by}</h2>
+<table><tr><th>${axisLabel}</th><th>Members</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Think:code</th><th>Persona</th></tr>${rollupRows}</table>
 
 <div class="persona">
   <h3>${persona.emoji} ${esc(persona.name)}</h3>
   <div class="muted">${esc(persona.description)}</div>
   <ul class="recs">${recs.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
-</div>
-${followSection}
-<footer>Generated locally by <a href="https://github.com/ryandemelo/token-monitor">token-monitor</a>. Costs marked ~ use placeholder prices. No data leaves your machine.</footer>
-</body></html>`;
+</div>`,
+  );
 }
