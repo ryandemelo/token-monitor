@@ -30,7 +30,7 @@ Usage:
   token-monitor fingerprint [--db <path>]
 
 Commands:
-  collect   Scan local agent logs (Claude Code, Gemini CLI, Codex, Antigravity) into SQLite
+  collect   Scan local agent logs (Claude Code, Gemini CLI, Codex, Cursor, Antigravity) into SQLite
   report    Activity breakdown, cost, personas, and recommendations
   analyze   Session-level deep dive; --llm asks your local agent CLI for
             prioritized recommendations (sends aggregate metrics only)
