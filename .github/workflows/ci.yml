@@ -20,3 +20,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm ci
+        working-directory: extension
+      - run: npm test
+        working-directory: extension
+      - run: npm run package
+        working-directory: extension
+      - uses: actions/upload-artifact@v4
+        with:
+          name: token-monitor-vscode-vsix
+          path: extension/*.vsix
