@@ -74,6 +74,12 @@ test('e2e: report --json emits a signed v1 export; fingerprint command matches i
   assert.equal(data.version, 1);
   assert.equal(data.overall.events, 15); // 3 claude + 2 gemini + 2 codex + 2 cursor + 3 antigravity + 3 copilot
   assert.equal(data.sig.alg, 'ed25519');
+  // recommendations 2.0: enriched details ride along, aggregate-only
+  assert.ok(Array.isArray(data.recommendationDetails));
+  for (const rec of data.recommendationDetails) {
+    assert.ok(Array.isArray(rec.evidence));
+    assert.ok(typeof rec.key === 'string');
+  }
 
   const fp = run(['fingerprint']).stdout.trim();
   assert.match(fp, /^[0-9a-f]{16}$/);

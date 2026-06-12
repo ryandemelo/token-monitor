@@ -7,6 +7,8 @@ import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, dominantActivity, displayName } from './team.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
+import type { EnrichedRec } from './recommendations.js';
+import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -128,9 +130,9 @@ export function renderReport(
   const persona = assignPersona(m);
   out.push(section(`Overall persona: ${persona.emoji} ${persona.name}`));
   out.push(`  ${persona.description}\n`);
-  const recs = [...persona.recommendations, ...generalRecommendations(m)];
   out.push(`${BOLD}${GREEN}Recommendations${RESET}`);
-  for (const r of recs) out.push(`  ${YELLOW}→${RESET} ${r}`);
+  for (const r of persona.recommendations) out.push(`  ${YELLOW}→${RESET} ${r}`);
+  out.push(...renderEnrichedRecs(enrichFindings(events, m, opts.days)));
 
   if (opts.follow && opts.follow.length > 0) {
     out.push(section('Follow-through (recommendation → measured change)'));
@@ -151,6 +153,18 @@ export function renderReport(
 
   out.push(`\n${DIM}Cost figures marked ~ use placeholder prices — edit src/pricing.ts.${RESET}\n`);
   return out.join('\n');
+}
+
+/** Finding lines with savings + worst-session evidence — shared with `analyze`. */
+export function renderEnrichedRecs(recs: EnrichedRec[]): string[] {
+  const out: string[] = [];
+  for (const r of recs) {
+    const savings = fmtSavings(r);
+    out.push(`  ${YELLOW}→${RESET} ${r.message}${savings ? `  ${GREEN}${savings}${RESET}` : ''}`);
+    const ev = fmtEvidence(r);
+    if (ev) out.push(`    ${DIM}${ev}${RESET}`);
+  }
+  return out;
 }
 
 export function renderTeamReport(

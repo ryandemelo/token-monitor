@@ -8,6 +8,7 @@ import { fmtMetric } from './followthrough.js';
 import { fmtTokens } from './report.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
+import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
   thinking: '#8b7ff5',
@@ -46,7 +47,15 @@ export function renderHtml(
 ): string {
   const m = computeMetrics(events);
   const persona = assignPersona(m);
-  const recs = [...persona.recommendations, ...generalRecommendations(m)];
+  const enriched = enrichFindings(events, m, opts.days);
+  const recItems = [
+    ...persona.recommendations.map((r) => `<li>${esc(r)}</li>`),
+    ...enriched.map((r) => {
+      const savings = fmtSavings(r);
+      const ev = fmtEvidence(r);
+      return `<li>${esc(r.message)}${savings ? ` <span class="save">${esc(savings)}</span>` : ''}${ev ? `<div class="ev muted">${esc(ev)}</div>` : ''}</li>`;
+    }),
+  ].join('');
   const projects = [...groupBy(events, 'project').entries()]
     .map(([proj, evs]) => ({ proj, m: computeMetrics(evs) }))
     .sort((a, b) => b.m.spendTokens - a.m.spendTokens)
@@ -115,7 +124,7 @@ ${stackedBar(m)}
 <div class="persona">
   <h3>${persona.emoji} ${esc(persona.name)}</h3>
   <div class="muted">${esc(persona.description)}</div>
-  <ul class="recs">${recs.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+  <ul class="recs">${recItems}</ul>
 </div>
 ${followSection}`,
   );
@@ -146,6 +155,8 @@ function pageShell(title: string, body: string): string {
   .persona { background:#1c212b; border-radius:10px; padding:1rem 1.2rem; margin-top:1rem; }
   .persona h3 { margin:.1rem 0 .4rem; }
   ul.recs { margin:.4rem 0 0; padding-left:1.2rem; } ul.recs li { margin:.3rem 0; }
+  .save { color:#5dc98a; font-weight:600; white-space:nowrap; }
+  .ev { font-size:.8rem; margin-top:.15rem; }
   .st-resolved { color:#5dc98a; } .st-regressing { color:#e88f68; } .st-improving { color:#9fd45d; }
   footer { margin:2.5rem 0 1rem; font-size:.8rem; color:#717a8a; }
 </style></head><body>
