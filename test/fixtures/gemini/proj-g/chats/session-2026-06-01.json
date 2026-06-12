@@ -1,0 +1,24 @@
+{
+  "sessionId": "g1",
+  "projectHash": "abc",
+  "messages": [
+    { "id": "m0", "type": "user", "content": [{ "text": "do it" }], "timestamp": "2026-06-01T09:00:00.000Z" },
+    {
+      "id": "m1",
+      "type": "gemini",
+      "timestamp": "2026-06-01T09:00:05.000Z",
+      "model": "gemini-3-flash-preview",
+      "tokens": { "input": 50, "output": 10, "cached": 5, "thoughts": 7, "tool": 3, "total": 75 },
+      "thoughts": [{ "subject": "Plan", "description": "..." }],
+      "toolCalls": [{ "id": "tc1", "name": "replace", "status": "success", "args": {} }]
+    },
+    {
+      "id": "m2",
+      "type": "gemini",
+      "timestamp": "2026-06-01T09:00:10.000Z",
+      "model": "gemini-3-flash-preview",
+      "tokens": { "input": 20, "output": 5, "cached": 0, "thoughts": 0, "tool": 0, "total": 25 },
+      "toolCalls": [{ "id": "tc2", "name": "run_shell_command", "status": "error", "args": { "command": "git commit -m wip" } }]
+    }
+  ]
+}

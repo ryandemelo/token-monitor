@@ -6,17 +6,18 @@
   "author": "Ryan",
   "type": "module",
   "bin": {
-    "token-monitor": "dist/cli.js"
+    "token-monitor": "dist/src/cli.js"
   },
   "files": [
-    "dist"
+    "dist/src"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test \"dist/test/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
