@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Metrics } from './metrics.js';
+import { PREMIUM_MODEL_RE } from './pricing.js';
 
 /**
  * Follow-through: a recommendation is only useful if you can see whether it
@@ -15,12 +16,18 @@ export interface Finding {
   message: string;
 }
 
-export type MetricKey = 'cacheHitRatio' | 'reworkRatio' | 'thinkToCodeRatio' | 'premiumShare';
+export type MetricKey =
+  | 'cacheHitRatio'
+  | 'reworkRatio'
+  | 'thinkToCodeRatio'
+  | 'premiumShare'
+  | 'contextBloatShare'
+  | 'coldRestartShare'
+  | 'premiumWasteShare'
+  | 'retryShare';
 
 export function premiumShare(m: Metrics): number {
-  const premium = Object.entries(m.byModel).filter(([name]) =>
-    /fable|opus|gpt-5(?!.*mini)|gemini-.*pro/i.test(name),
-  );
+  const premium = Object.entries(m.byModel).filter(([name]) => PREMIUM_MODEL_RE.test(name));
   if (!premium.length) return 0;
   return premium.reduce((s, [, v]) => s + v.tokens, 0) / (m.spendTokens || 1);
 }
@@ -63,6 +70,38 @@ export function structuredFindings(m: Metrics): Finding[] {
       metric: 'premiumShare',
       direction: 'down',
       message: `${(share * 100).toFixed(0)}% of tokens on premium models. Route exploration and boilerplate turns to a cheaper tier.`,
+    });
+  }
+  if (m.contextBloatShare >= 0.3 && m.trendSessions >= 3) {
+    out.push({
+      key: 'context-bloat',
+      metric: 'contextBloatShare',
+      direction: 'down',
+      message: `${m.bloatedSessions} of ${m.trendSessions} long sessions grow their context ≥2× without cache reads keeping pace — start a fresh session or compact at task boundaries before the context balloons.`,
+    });
+  }
+  if (m.coldRestartShare >= 0.2 && m.spendTokens > 100_000) {
+    out.push({
+      key: 'cold-restarts',
+      metric: 'coldRestartShare',
+      direction: 'down',
+      message: `${(m.coldRestartShare * 100).toFixed(0)}% of fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after the ~5-min cache TTL. Batch prompts within the cache window, or split long-idle work into new sessions.`,
+    });
+  }
+  if (m.premiumWasteShare >= 0.3 && m.spendTokens > 100_000) {
+    out.push({
+      key: 'premium-misroute',
+      metric: 'premiumWasteShare',
+      direction: 'down',
+      message: `${(m.premiumWasteShare * 100).toFixed(0)}% of spend is premium-model tokens on exploration/conversation turns. Route reads and chat to a cheaper tier; keep the premium model for code-writing turns.`,
+    });
+  }
+  if (m.retryShare >= 0.05) {
+    out.push({
+      key: 'tool-retry-loops',
+      metric: 'retryShare',
+      direction: 'down',
+      message: `${(m.retryShare * 100).toFixed(0)}% of spend goes to turns re-running a tool right after it errored. \`analyze\` shows which tools — fix the recurring cause (flaky command, bad path, missing permission) instead of paying for retries.`,
     });
   }
   return out;

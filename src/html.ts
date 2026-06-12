@@ -104,6 +104,7 @@ export function renderHtml(
 ${stackedBar(m)}
 <div class="legend">${legend}</div>
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
+<p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}</p>
 
 <h2>Projects</h2>
 <table><tr><th>Project</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Persona</th></tr>${projRows}</table>

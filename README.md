@@ -158,7 +158,11 @@ Identity is the **signing fingerprint**, not the OS username: two different "rya
 - **Most expensive sessions** — turns, fix loops, avg context per turn, duration, dominant activity
 - **Fix-loop sessions** — testing→coding churn
 - **Context-heavy sessions** — average tokens fed per turn (context-bloat proxy)
-- **Tool error rates** — tools that keep failing
+- **Context bloat trend** — sessions whose late-half context grew ≥2× without cache reads keeping pace (start fresh / compact earlier)
+- **Cold restarts** — turns resuming after the ~5-min cache TTL that re-paid their context as fresh input (batch prompts, split idle work)
+- **Tool error rates** — tools that keep failing, plus the token cost of their retry loops
+
+The report and dashboard surface the same signals in one line (context bloat, cold restarts, premium tokens on exploration/conversation, retry-loop spend), and each one becomes a tracked recommendation when it crosses its threshold.
 
 Add `--llm` and the aggregates go to a coding agent you already have installed (`claude`, `gemini`, or `codex` — auto-detected, override with `--agent`), which returns prioritized interventions with the evidence, the workflow change, and the metric to watch:
 

@@ -48,6 +48,9 @@ export const PRICES: ModelPrice[] = [
   { match: /gpt-5|codex/, input: 1.75, output: 14, cacheRead: 0.18, cacheWrite: 0, estimated: true },
 ];
 
+/** Models billed at a premium tier — drives right-sizing signals. */
+export const PREMIUM_MODEL_RE = /fable|mythos|opus|gpt-5(?!.*mini)|gemini-.*pro/i;
+
 export interface Cost {
   usd: number;
   estimated: boolean;
