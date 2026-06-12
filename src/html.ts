@@ -9,6 +9,7 @@ import { fmtTokens } from './report.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
 import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
+import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
   thinking: '#8b7ff5',
@@ -43,7 +44,7 @@ function stackedBar(m: Metrics): string {
 
 export function renderHtml(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[] },
+  opts: { days: number; follow?: FollowRow[]; previousEvents?: StoredEvent[] },
 ): string {
   const m = computeMetrics(events);
   const persona = assignPersona(m);
@@ -94,6 +95,30 @@ export function renderHtml(
     )
     .join('');
 
+  let trendSection = '';
+  if (opts.previousEvents && opts.previousEvents.length) {
+    const rows = trendRows(m, computeMetrics(opts.previousEvents));
+    const cls = { better: 'st-improving', worse: 'st-regressing', neutral: '', flat: 'muted' } as const;
+    const trendRowsHtml = rows
+      .map((r) => {
+        const d = r.now - r.prev;
+        const v = verdictOf(r);
+        const arrow = v === 'flat' ? '→' : d > 0 ? '↑' : '↓';
+        return `<tr><td>${esc(r.label)}</td><td class="num">${fmtTrendValue(r, r.prev)}</td><td class="num">${fmtTrendValue(r, r.now)}</td><td class="num ${cls[v]}">${arrow} ${d >= 0 ? '+' : '−'}${fmtTrendValue(r, Math.abs(d))}</td></tr>`;
+      })
+      .join('');
+    const movers = projectMovers(events, opts.previousEvents)
+      .map(
+        (p) =>
+          `<tr><td>${esc(p.project)}</td><td class="num">${fmtTokens(p.prev)}</td><td class="num">${fmtTokens(p.now)}</td><td class="num">${p.delta >= 0 ? '+' : '−'}${fmtTokens(Math.abs(p.delta))}</td></tr>`,
+      )
+      .join('');
+    trendSection = `<h2>Trend — vs the previous ${opts.days} days</h2>
+<table><tr><th>Metric</th><th>Previous</th><th>Now</th><th>Change</th></tr>${trendRowsHtml}</table>
+<h2>Top project movers</h2>
+<table><tr><th>Project</th><th>Previous</th><th>Now</th><th>Change</th></tr>${movers}</table>`;
+  }
+
   const followSection =
     opts.follow && opts.follow.length
       ? `<h2>Follow-through</h2><table><tr><th>Recommendation</th><th>Metric</th><th>Baseline</th><th>Now</th><th>Since</th><th>Status</th></tr>${opts.follow
@@ -120,7 +145,7 @@ ${stackedBar(m)}
 
 <h2>Models</h2>
 <table><tr><th>Model</th><th>Tokens</th><th>Cost</th></tr>${modelRows}</table>
-
+${trendSection}
 <div class="persona">
   <h3>${persona.emoji} ${esc(persona.name)}</h3>
   <div class="muted">${esc(persona.description)}</div>

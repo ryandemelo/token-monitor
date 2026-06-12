@@ -172,6 +172,10 @@ token-monitor analyze --llm
 
 No API key management: it reuses your existing agent CLI and its subscription. The payload is the same aggregates-only data as `report --json` (token counts, ratios, tool names, project basenames — never prompts or code). It does leave your machine via that agent's provider, so skip `--llm` if even project names are sensitive.
 
+## Trends
+
+`report --trend` compares the window against the previous same-length one — spend, cost, cache hit, rework, and the optimization signals, each with a direction arrow (green = improving, red = regressing), plus the top project movers by spend change. The HTML dashboard includes the trend automatically when two windows of data exist.
+
 ## Recommendations: evidence + savings
 
 Every threshold-fired recommendation answers "why should I believe this and what is it worth": it cites the worst 3 sessions that triggered it (session ids, dates, token counts — aggregate-only, never content) and estimates the $/month saved if the metric hit its target, priced from **your own model mix** and the price table (`~` when estimated prices or a tier assumption are involved):
@@ -199,7 +203,7 @@ Resolved findings re-open automatically if the metric regresses.
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
-token-monitor report  [--days 30] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]

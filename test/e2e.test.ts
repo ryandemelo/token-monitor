@@ -160,6 +160,13 @@ test('e2e: merge rejects an invalid --by axis', () => {
   assert.match(stderr, /--by must be/);
 });
 
+test('e2e: report --trend renders the trend section (empty previous window)', () => {
+  const { stdout, code } = run(['report', '--trend', ...DAYS]);
+  assert.equal(code, 0);
+  assert.ok(stdout.includes('Trend — last 36500 days vs the 36500 before'));
+  assert.ok(stdout.includes('No events in the previous window'));
+});
+
 test('e2e: html writes a self-contained dashboard', () => {
   const out = join(HOME, 'dash.html');
   const { code } = run(['html', '--out', out, ...DAYS]);
