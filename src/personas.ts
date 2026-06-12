@@ -1,4 +1,5 @@
 import type { Metrics } from './metrics.js';
+import { structuredFindings } from './followthrough.js';
 
 /**
  * Usage personas — behavioral archetypes derived from how tokens are spent,
@@ -110,33 +111,7 @@ export function assignPersona(m: Metrics): Persona {
   return BALANCED;
 }
 
-/** Cross-cutting findings independent of persona. */
+/** Cross-cutting findings independent of persona (see followthrough.ts). */
 export function generalRecommendations(m: Metrics): string[] {
-  const recs: string[] = [];
-  if (m.cacheHitRatio < 0.5 && m.spendTokens > 100_000) {
-    recs.push(
-      `Cache hit ratio ${(m.cacheHitRatio * 100).toFixed(0)}% — low. Cache reads cost ~10% of fresh input; long-lived sessions and stable system context raise this. Biggest single cost lever.`,
-    );
-  }
-  if (m.reworkRatio > 0.2) {
-    recs.push(
-      `${(m.reworkRatio * 100).toFixed(0)}% of spend happens after test failures. Plan-first workflows and tighter task specs cut this.`,
-    );
-  }
-  if (m.thinkToCodeRatio < 0.15 && m.byActivity.coding.tokens > 50_000) {
-    recs.push(
-      'Very low think:code ratio. Teams that spend 15-30% of tokens on planning/exploration ship with less rework.',
-    );
-  }
-  const models = Object.entries(m.byModel).sort((a, b) => b[1].tokens - a[1].tokens);
-  const premium = models.filter(([name]) => /fable|opus|gpt-5(?!.*mini)|gemini-.*pro/i.test(name));
-  if (premium.length && models.length > 1) {
-    const premiumShare = premium.reduce((s, [, v]) => s + v.tokens, 0) / (m.spendTokens || 1);
-    if (premiumShare > 0.9) {
-      recs.push(
-        `${(premiumShare * 100).toFixed(0)}% of tokens on premium models. Route exploration and boilerplate turns to a cheaper tier.`,
-      );
-    }
-  }
-  return recs;
+  return structuredFindings(m).map((f) => f.message);
 }

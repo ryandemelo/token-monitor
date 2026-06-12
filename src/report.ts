@@ -5,6 +5,8 @@ import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import type { ExportV1 } from './team.js';
 import { mergeMetrics, rollupByDiscipline, dominantActivity } from './team.js';
+import type { FollowRow } from './followthrough.js';
+import { fmtMetric } from './followthrough.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -49,7 +51,18 @@ function section(title: string): string {
   return `\n${BOLD}${CYAN}${title}${RESET}\n`;
 }
 
-export function renderReport(events: StoredEvent[], opts: { days: number }): string {
+const STATUS_LABEL: Record<FollowRow['status'], string> = {
+  new: '◷ new',
+  tracking: '— tracking',
+  improving: '↗ improving',
+  regressing: '⚠ regressing',
+  resolved: '✅ resolved',
+};
+
+export function renderReport(
+  events: StoredEvent[],
+  opts: { days: number; follow?: FollowRow[] },
+): string {
   if (events.length === 0) {
     return 'No events in range. Run `token-monitor collect` first, or widen --days.';
   }
@@ -115,6 +128,23 @@ export function renderReport(events: StoredEvent[], opts: { days: number }): str
   const recs = [...persona.recommendations, ...generalRecommendations(m)];
   out.push(`${BOLD}${GREEN}Recommendations${RESET}`);
   for (const r of recs) out.push(`  ${YELLOW}→${RESET} ${r}`);
+
+  if (opts.follow && opts.follow.length > 0) {
+    out.push(section('Follow-through (recommendation → measured change)'));
+    out.push(
+      table(
+        ['Recommendation', 'Metric', 'Baseline', 'Now', 'Since', 'Status'],
+        opts.follow.map((f) => [
+          f.key,
+          f.metric,
+          fmtMetric(f.metric, f.baseline),
+          fmtMetric(f.metric, f.current),
+          f.createdAt.slice(0, 10),
+          STATUS_LABEL[f.status],
+        ]),
+      ),
+    );
+  }
 
   out.push(`\n${DIM}Cost figures marked ~ use placeholder prices — edit src/pricing.ts.${RESET}\n`);
   return out.join('\n');

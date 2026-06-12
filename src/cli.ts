@@ -6,6 +6,8 @@ import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
 import { renderReport, renderTeamReport } from './report.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics } from './team.js';
+import { syncFindings } from './followthrough.js';
+import { computeMetrics } from './metrics.js';
 import type { ExportV1 } from './team.js';
 import type { Source } from './types.js';
 
@@ -109,7 +111,13 @@ function main() {
         ),
       );
     } else {
-      console.log(renderReport(events, { days }));
+      // Follow-through baselines only on unfiltered runs, so --project/--source
+      // slices can't pollute them.
+      const follow =
+        !values.project && !values.source && events.length > 0
+          ? syncFindings(db, computeMetrics(events))
+          : undefined;
+      console.log(renderReport(events, { days, follow }));
     }
   } else {
     console.error(`Unknown command "${cmd}"\n`);
