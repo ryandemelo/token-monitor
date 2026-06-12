@@ -33,7 +33,7 @@ function bar(share: number, width = 24): string {
   return '█'.repeat(filled) + DIM + '░'.repeat(width - filled) + RESET;
 }
 
-function table(headers: string[], rows: string[][]): string {
+export function table(headers: string[], rows: string[][]): string {
   const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
   const widths = headers.map((h, i) =>
     Math.max(strip(h).length, ...rows.map((r) => strip(r[i] ?? '').length)),
@@ -47,7 +47,7 @@ function table(headers: string[], rows: string[][]): string {
   ].join('\n');
 }
 
-function section(title: string): string {
+export function section(title: string): string {
   return `\n${BOLD}${CYAN}${title}${RESET}\n`;
 }
 
