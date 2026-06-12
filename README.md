@@ -130,6 +130,27 @@ token-monitor merge exports/*.json --team team.yaml
 
 The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill.
 
+### Org rollups (lead → org)
+
+The same machinery scales to many teams with no server: every team's `push` targets **one drop** (shared dir or HTTP endpoint), and the org lead merges the signed files that land there. The member map can group by team:
+
+```sh
+cat > teams.yaml <<'EOF'
+platform:
+  alice: frontend
+  bob: backend
+data:
+  carol: ml
+EOF
+
+token-monitor merge drop/*.json --team teams.yaml --by team   # or --by discipline
+token-monitor merge drop/*.json --team teams.yaml --by team --html org.html
+```
+
+`--by` picks the comparison axis; `--html` also writes a self-contained org dashboard. Flat `team.yaml` files keep working unchanged.
+
+Identity is the **signing fingerprint**, not the OS username: two different "ryan"s on different teams stay distinct, and when the same signer's exports show up more than once (stale files in the drop), only the newest is counted. With `--keys keys.json` the lead's pinned `user → fingerprint` map is also the naming authority — members are labeled by their enrolled name regardless of what their machine reports.
+
 ## Deep analysis & LLM-powered recommendations
 
 `token-monitor analyze` goes a level deeper than the report — which sessions and habits burn the tokens:
@@ -166,7 +187,7 @@ token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|
 token-monitor report  [--days 30] [--project <name>] [--source <name>] [--json] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
-token-monitor merge   <export.json>... [--team team.yaml] [--json]
+token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]
 ```
 
 ## Contributing
@@ -176,6 +197,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 ## Roadmap
 
 - [x] Team rollups: `merge` command + `team.yaml` discipline mapping
+- [x] Org rollups: two-level `teams.yaml`, `merge --by team|discipline`, fingerprint identity, org HTML dashboard
 - [x] Self-contained HTML dashboard
 - [x] Follow-through tracking: baseline on first firing, delta on every later report
 - [x] IDE coverage: Cursor, Antigravity, Copilot Chat adapters

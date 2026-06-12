@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, cpSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
 import { cursorUserDir } from '../src/adapters/cursor.js';
@@ -99,6 +99,59 @@ test('e2e: merge with team config produces discipline rollups', () => {
   assert.equal(code, 0);
   assert.ok(stdout.includes('By discipline'));
   assert.ok(stdout.includes('unassigned')); // current user not in team.yaml
+});
+
+test('e2e: multi-team merge — two-level teams.yaml, --by team, fingerprint dedup, --html', () => {
+  // Second member: same OS username, different machine (home) -> different signing key.
+  const home2 = mkdtempSync(join(tmpdir(), 'tm-e2e-member2-'));
+  cpSync(join(FIXTURES, 'claude'), join(home2, '.claude', 'projects'), { recursive: true });
+  assert.equal(run(['collect'], { home: home2 }).code, 0);
+  writeFileSync(join(HOME, 'member2.json'), run(['report', '--json', ...DAYS], { home: home2 }).stdout);
+
+  // Same signer exports twice: the older one must be dropped, not double-counted.
+  writeFileSync(join(HOME, 'me-stale.json'), readFileSync(join(HOME, 'me.json')));
+  writeFileSync(join(HOME, 'me-fresh.json'), run(['report', '--json', ...DAYS]).stdout);
+
+  const user = userInfo().username;
+  writeFileSync(
+    join(HOME, 'teams.yaml'),
+    `platform:\n  ${user}: backend\ndata:\n  someone-else: ml\n`,
+  );
+
+  const htmlOut = join(HOME, 'team.html');
+  const { stdout, stderr, code } = run([
+    'merge',
+    join(HOME, 'me-stale.json'), join(HOME, 'me-fresh.json'), join(HOME, 'member2.json'),
+    '--team', join(HOME, 'teams.yaml'), '--by', 'team', '--html', htmlOut,
+  ]);
+  assert.equal(code, 0);
+  assert.ok(stdout.includes('By team'));
+  assert.ok(stdout.includes('platform')); // user mapped via two-level config
+  assert.match(stderr, /skipped stale export/);
+
+  const html = readFileSync(htmlOut, 'utf8');
+  assert.ok(html.startsWith('<!doctype html>'));
+  assert.ok(html.includes('platform'));
+
+  // --json: stale export deduped -> 2 exports remain (one per machine), one member name
+  const json = JSON.parse(run([
+    'merge',
+    join(HOME, 'me-stale.json'), join(HOME, 'me-fresh.json'), join(HOME, 'member2.json'),
+    '--team', join(HOME, 'teams.yaml'), '--by', 'team', '--json',
+  ]).stdout);
+  assert.deepEqual(json.members, [user]);
+  assert.equal(json.by, 'team');
+  assert.equal(json.rollups[0].group, 'platform');
+  // 3 claude fixture sessions per machine, two machines, stale export excluded
+  const me = JSON.parse(readFileSync(join(HOME, 'me-fresh.json'), 'utf8'));
+  const m2 = JSON.parse(readFileSync(join(HOME, 'member2.json'), 'utf8'));
+  assert.equal(json.overall.events, me.overall.events + m2.overall.events);
+});
+
+test('e2e: merge rejects an invalid --by axis', () => {
+  const { code, stderr } = run(['merge', join(HOME, 'me.json'), '--by', 'planet']);
+  assert.equal(code, 1);
+  assert.match(stderr, /--by must be/);
 });
 
 test('e2e: html writes a self-contained dashboard', () => {

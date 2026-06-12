@@ -5,15 +5,15 @@ import { ADAPTERS } from './adapters/index.js';
 import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
 import { renderReport, renderTeamReport } from './report.js';
 import { assignPersona, generalRecommendations } from './personas.js';
-import { buildExport, parseTeamConfig, mergeMetrics } from './team.js';
+import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
 import { syncFindings } from './followthrough.js';
 import { computeMetrics } from './metrics.js';
-import { renderHtml } from './html.js';
+import { renderHtml, renderTeamHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
 import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor, DEFAULT_KEY_DIR } from './sign.js';
 import { fetchTeamConfig, saveConfig, loadConfig, pushExport, installSchedule, removeSchedule } from './deploy.js';
 import { realpathSync } from 'node:fs';
-import type { ExportV1 } from './team.js';
+import type { SignedExport, RollupAxis } from './team.js';
 import type { Source } from './types.js';
 
 const HELP = `token-monitor — measure how effectively your team spends AI coding-agent tokens
@@ -23,7 +23,8 @@ Usage:
   token-monitor report  [--days <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
-  token-monitor merge   <export.json>... [--team team.yaml] [--verify] [--keys keys.json] [--json]
+  token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
+                        [--verify] [--keys keys.json] [--json] [--html team.html]
   token-monitor init    --from <url-or-path>
   token-monitor push    [--db <path>]
   token-monitor schedule [--hours <n>] [--remove]
@@ -53,7 +54,10 @@ Options:
   --days      report window in days (default: 30)
   --project   filter to one project
   --json      machine-readable output (for team aggregation)
-  --team      username -> discipline map, flat YAML or JSON
+  --team      member map: flat (\`alice: frontend\`) or two-level YAML
+              (\`platform:\` header, indented members), or JSON
+  --by        merge rollup axis: team or discipline (default: discipline)
+  --html      also write the merged team dashboard to this path
   --db        SQLite path (default: ${DEFAULT_DB})
 `;
 
@@ -100,6 +104,8 @@ async function main() {
       agent: { type: 'string' },
       verify: { type: 'boolean', default: false },
       keys: { type: 'string' },
+      by: { type: 'string' },
+      html: { type: 'string' },
       from: { type: 'string' },
       hours: { type: 'string' },
       remove: { type: 'boolean', default: false },
@@ -120,9 +126,14 @@ async function main() {
       console.error('merge requires at least one export file (token-monitor report --json > me.json)');
       process.exit(1);
     }
+    const by = (values.by ?? 'discipline') as RollupAxis;
+    if (by !== 'team' && by !== 'discipline') {
+      console.error(`--by must be "team" or "discipline", got "${values.by}"`);
+      process.exit(1);
+    }
     const keyring = values.keys ? loadKeyring(values.keys) : undefined;
     let verifyFailed = false;
-    const exports: ExportV1[] = files.map((f) => {
+    const all: SignedExport[] = files.map((f) => {
       const data = JSON.parse(readFileSync(f, 'utf8'));
       if (data.version !== 1 || !data.overall) {
         throw new Error(`${f} is not a token-monitor v1 export`);
@@ -134,18 +145,34 @@ async function main() {
         console.error(`${mark} ${f} (${data.user})${vr.ok ? ` — signed by ${vr.fingerprint}` : ` — ${vr.reason}`}`);
         if (!vr.ok) verifyFailed = true;
       }
-      return data as ExportV1;
+      return data as SignedExport;
     });
     if (verifyFailed) {
       console.error('\nVerification failed — refusing to merge. Fix or exclude the exports above.');
       process.exit(1);
     }
+    // Identity is the signing fingerprint (user@host for unsigned exports) —
+    // the same signer pushing twice contributes only its newest export.
+    const { kept: exports, dropped } = dedupeExports(all);
+    for (const d of dropped) {
+      console.error(`⊘ skipped stale export from ${displayName(d, keyring)} (${identityOf(d)}, generated ${d.generatedAt}) — newer one present`);
+    }
     const team = values.team ? parseTeamConfig(values.team) : {};
     if (values.json) {
       const overall = mergeMetrics(exports.map((e) => e.overall));
-      console.log(JSON.stringify({ members: exports.map((e) => e.user), overall, persona: assignPersona(overall) }, null, 2));
+      console.log(JSON.stringify({
+        members: [...new Set(exports.map((e) => displayName(e, keyring)))],
+        by,
+        rollups: rollupExports(exports, team, by, keyring),
+        overall,
+        persona: assignPersona(overall),
+      }, null, 2));
     } else {
-      console.log(renderTeamReport(exports, team));
+      console.log(renderTeamReport(exports, team, { by, keyring }));
+    }
+    if (values.html) {
+      writeFileSync(values.html, renderTeamHtml(exports, team, { by, keyring }));
+      console.error(`Wrote ${values.html} (${exports.length} export(s)).`);
     }
     return;
   }
