@@ -18,8 +18,8 @@ Where the tokens go (activity share of input+output)
 
   rework ratio 17.1%  ·  think:code 2.30
 
-  Project     Tokens  Cost      Cache  Rework  Persona
-  ─────────   ──────  ────────  ─────  ──────  ───────────
+  Project        Tokens  Cost      Cache  Rework  Persona
+  ────────────   ──────  ────────  ─────  ──────  ───────────
   checkout-api   12.4M   $2104     97%    13%     📐 Architect
   etl-pipeline    5.0M    $730     96%    60%     🚒 Firefighter
 ```
@@ -78,8 +78,9 @@ Adapters skip gracefully when a tool isn't installed.
 Each developer exports locally; the JSON contains aggregate metrics only (no prompts, no code, no file paths beyond project basenames), so it's safe to share:
 
 ```sh
-# each developer
-token-monitor collect && token-monitor report --json > $(whoami).json
+# each developer (exports/ is gitignored — keep real metrics out of repos)
+mkdir -p exports
+token-monitor collect && token-monitor report --json > exports/$(whoami).json
 
 # team lead
 cat > team.yaml <<'EOF'
@@ -87,7 +88,7 @@ alice: frontend
 bob: backend
 carol: data
 EOF
-token-monitor merge alice.json bob.json carol.json --team team.yaml
+token-monitor merge exports/*.json --team team.yaml
 ```
 
 The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill.

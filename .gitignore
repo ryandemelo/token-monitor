@@ -3,3 +3,14 @@ dist/
 *.sqlite
 *.db
 .DS_Store
+
+# generated reports and member exports — may contain real project names/costs
+report.html
+exports/
+
+# personal agent context — never commit
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.gemini/
+*.tgz
