@@ -208,6 +208,95 @@ test('e2e: init from local config + push delivers a verifiable export', () => {
   assert.equal(verify.code, 0);
 });
 
+test('e2e: reconcile verifies local totals against a mock usage API', async () => {
+  const { createServer } = await import('node:http');
+  const { spawn } = await import('node:child_process');
+  // The mock server runs in THIS process — the CLI must run async (spawn, not
+  // spawnSync) or the blocked event loop can never serve the request.
+  const runAsync = (args: string[], env: NodeJS.ProcessEnv) =>
+    new Promise<{ stdout: string; stderr: string; status: number | null }>((resolve) => {
+      const child = spawn(process.execPath, [CLI, ...args], { env: { ...process.env, ...env } });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('close', (status) => resolve({ stdout, stderr, status }));
+    });
+  // Fixture claude events: 3 turns of claude-opus-4-7. Org API reports more
+  // than local (normal) first, then less than local (tamper flag).
+  const mkBody = (uncached: number) => JSON.stringify({
+    data: [{
+      starting_at: '2026-06-01T00:00:00Z',
+      ending_at: '2026-06-02T00:00:00Z',
+      results: [{
+        model: 'claude-opus-4-7',
+        uncached_input_tokens: uncached,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      }],
+    }],
+    has_more: false,
+  });
+  let body = mkBody(100_000_000);
+  const server = createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(body);
+  });
+  const url: string = await new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+    });
+  });
+  try {
+    const runReconcile = (home: string) =>
+      runAsync(['reconcile', '--days', '31'], {
+        HOME: home, USERPROFILE: home,
+        ANTHROPIC_ADMIN_KEY: 'e2e-test-key',
+        TOKEN_MONITOR_ANTHROPIC_URL: url,
+      });
+
+    // Org reports far more than this machine collected — normal, reconciles.
+    const ok = await runReconcile(HOME);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(ok.stdout.includes('Reconcile'));
+    assert.ok(ok.stdout.includes('claude-opus-4-7'));
+    assert.ok(ok.stdout.includes('reconciles'));
+
+    // Tamper case: a db whose local totals exceed what the org was billed.
+    const home3 = mkdtempSync(join(tmpdir(), 'tm-e2e-reconcile-'));
+    const { openDb, insertEvents } = await import('../src/store.js');
+    const db = openDb(join(home3, '.token-monitor', 'token-monitor.sqlite'));
+    insertEvents(db, [{
+      source: 'claude-code', eventKey: 'tamper-1', sessionId: 's', project: 'p',
+      timestamp: new Date().toISOString(), model: 'claude-opus-4-7',
+      inputTokens: 5000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+      thinkingTokens: 0, tools: [], commands: [], hasThinking: false, isError: false,
+    }]);
+    body = mkBody(1);
+    const tampered = await runReconcile(home3);
+    assert.equal(tampered.status, 1, tampered.stderr);
+    assert.ok(tampered.stdout.includes('investigate'));
+
+    // Missing key fails with the env-var instruction, exit 1.
+    const noKey = spawnSync(process.execPath, [CLI, 'reconcile'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME, USERPROFILE: HOME, ANTHROPIC_ADMIN_KEY: '' },
+    });
+    assert.equal(noKey.status, 1);
+    assert.match(noKey.stderr, /ANTHROPIC_ADMIN_KEY is not set/);
+
+    // Unknown provider exits 1.
+    const bad = spawnSync(process.execPath, [CLI, 'reconcile', '--provider', 'grok'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME, USERPROFILE: HOME, ANTHROPIC_ADMIN_KEY: 'x' },
+    });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /Unknown provider/);
+  } finally {
+    server.close();
+  }
+});
+
 test('e2e: unknown command and bare invocation fail with help', () => {
   assert.equal(run(['definitely-not-a-command']).code, 1);
   const bare = run([]);
