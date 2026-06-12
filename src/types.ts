@@ -1,4 +1,4 @@
-export type Source = 'claude-code' | 'gemini-cli' | 'codex';
+export type Source = 'claude-code' | 'gemini-cli' | 'codex' | 'antigravity';
 
 export type Activity =
   | 'thinking'

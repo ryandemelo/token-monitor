@@ -2,6 +2,7 @@ import type { UsageEvent, CollectResult, Source } from '../types.js';
 import { collectClaudeCode } from './claude-code.js';
 import { collectGeminiCli } from './gemini-cli.js';
 import { collectCodex } from './codex.js';
+import { collectAntigravity } from './antigravity.js';
 
 export type Adapter = () => { events: UsageEvent[]; result: CollectResult };
 
@@ -15,4 +16,5 @@ export const ADAPTERS: Record<Source, Adapter> = {
   'claude-code': collectClaudeCode,
   'gemini-cli': collectGeminiCli,
   codex: collectCodex,
+  antigravity: collectAntigravity,
 };

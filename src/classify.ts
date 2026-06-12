@@ -8,13 +8,13 @@ const WRITE_TOOLS = new Set([
 ]);
 
 const SHELL_TOOLS = new Set([
-  'bash', 'shell', 'run_shell_command', 'run_terminal_cmd', 'local_shell', 'exec_command',
+  'bash', 'shell', 'run_shell_command', 'run_terminal_cmd', 'run_command', 'local_shell', 'exec_command',
 ]);
 
 const READ_TOOLS = new Set([
   'read', 'grep', 'glob', 'ls', 'webfetch', 'websearch', 'agent', 'task', 'explore', 'toolsearch',
   'read_file', 'read_many_files', 'search_file_content', 'list_directory', 'find_files',
-  'google_web_search', 'web_fetch', 'codebase_search', 'view',
+  'google_web_search', 'web_fetch', 'codebase_search', 'view', 'view_file',
 ]);
 
 const PLAN_TOOLS = new Set([

@@ -77,6 +77,7 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | ✅ Verified — per-turn tokens, cache split, model, tools, git branch |
 | **Gemini CLI** | `~/.gemini/tmp/*/chats/*.json` | ✅ Verified — per-turn tokens incl. thoughts, tool calls |
 | **Codex CLI** | `~/.codex/sessions/**/rollout-*.jsonl` | ⚠️ Experimental — diffs cumulative `token_count` events; verify against Codex's own usage screens |
+| **Antigravity CLI** | `~/.gemini/antigravity-cli/conversations/*.db` (SQLite + protobuf) | ✅ Verified — per-call prompt/cached/output tokens, per-row model, tool steps, workspace + branch. Vendor-internal format: fails soft if the schema changes |
 
 Adapters skip gracefully when a tool isn't installed.
 

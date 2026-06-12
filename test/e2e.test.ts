@@ -5,6 +5,7 @@ import { mkdtempSync, cpSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { makeAntigravityFixture } from './helpers.js';
 
 /**
  * True end-to-end: runs the built CLI as a subprocess against a synthetic
@@ -22,6 +23,7 @@ const HOME = mkdtempSync(join(tmpdir(), 'tm-e2e-home-'));
 cpSync(join(FIXTURES, 'claude'), join(HOME, '.claude', 'projects'), { recursive: true });
 cpSync(join(FIXTURES, 'gemini'), join(HOME, '.gemini', 'tmp'), { recursive: true });
 cpSync(join(FIXTURES, 'codex'), join(HOME, '.codex', 'sessions'), { recursive: true });
+makeAntigravityFixture(join(HOME, '.gemini', 'antigravity-cli'));
 
 function run(args: string[], opts: { home?: string } = {}) {
   const home = opts.home ?? HOME;
@@ -41,6 +43,7 @@ test('e2e: collect parses all three sources into the default db', () => {
   assert.match(stdout, /claude-code\s+\d+ files\s+3 turns\s+3 new/);
   assert.match(stdout, /gemini-cli\s+\d+ files\s+2 turns\s+2 new/);
   assert.match(stdout, /codex\s+\d+ files\s+2 turns\s+2 new/);
+  assert.match(stdout, /antigravity\s+\d+ files\s+3 turns\s+3 new/);
   assert.ok(existsSync(join(HOME, '.token-monitor', 'token-monitor.sqlite')));
 });
 
@@ -53,7 +56,7 @@ test('e2e: collect is idempotent', () => {
 test('e2e: report renders all sections from collected data', () => {
   const { stdout, code } = run(['report', ...DAYS]);
   assert.equal(code, 0);
-  for (const expected of ['Where the tokens go', 'By project', 'By model', 'Recommendations', 'proj-alpha', 'proj-g', 'proj-c', 'gpt-5-codex']) {
+  for (const expected of ['Where the tokens go', 'By project', 'By model', 'Recommendations', 'proj-alpha', 'proj-g', 'proj-c', 'proj-anti', 'gpt-5-codex']) {
     assert.ok(stdout.includes(expected), `report missing "${expected}"`);
   }
 });
@@ -62,7 +65,7 @@ test('e2e: report --json emits a signed v1 export; fingerprint command matches i
   const exportJson = run(['report', '--json', ...DAYS]).stdout;
   const data = JSON.parse(exportJson);
   assert.equal(data.version, 1);
-  assert.equal(data.overall.events, 7); // 3 claude + 2 gemini + 2 codex
+  assert.equal(data.overall.events, 10); // 3 claude + 2 gemini + 2 codex + 3 antigravity
   assert.equal(data.sig.alg, 'ed25519');
 
   const fp = run(['fingerprint']).stdout.trim();
