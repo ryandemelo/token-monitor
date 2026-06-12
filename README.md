@@ -152,6 +152,23 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [ ] Org-level cross-check via provider usage APIs
 - [ ] npm publish
 
+## Integrity & threat model
+
+Exports are **tamper-evident**. Each machine generates an Ed25519 keypair on first export (`~/.token-monitor/signing-key.pem`, mode 0600); `report --json` signs a canonical serialization of the payload. The team lead verifies on merge:
+
+```sh
+# dev, once: print fingerprint for enrollment
+token-monitor fingerprint            # e.g. 3f9a1c0b2d4e5f67
+
+# lead: pin who may sign for whom (keys.json), then verify on every merge
+echo '{"alice": "3f9a1c0b2d4e5f67"}' > keys.json
+token-monitor merge exports/*.json --verify --keys keys.json
+```
+
+`--verify` rejects any export modified after signing or unsigned; `--keys` additionally rejects exports signed by a key not enrolled for that username (impersonation).
+
+**What this does not cover — read before relying on it:** a developer controls their own machine, so someone determined to game metrics could edit the *source logs* before collection. Signing detects tampering after export, not dishonest inputs. The planned mitigation is reconciling team totals against the provider's billing/usage APIs (roadmap) — gamed numbers won't reconcile. Treat these metrics as a coaching instrument, not a performance-review weapon; the latter invites exactly the gaming this can't stop.
+
 ## Privacy
 
 Everything stays on your machine. token-monitor reads log files locally, stores aggregate numbers in a local SQLite file, and never makes a network request. Prompt and code content is never stored — only token counts, tool names, timestamps, and project/branch names.

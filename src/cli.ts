@@ -10,6 +10,7 @@ import { syncFindings } from './followthrough.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
+import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor } from './sign.js';
 import type { ExportV1 } from './team.js';
 import type { Source } from './types.js';
 
@@ -20,7 +21,8 @@ Usage:
   token-monitor report  [--days <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
-  token-monitor merge   <export.json>... [--team team.yaml] [--json]
+  token-monitor merge   <export.json>... [--team team.yaml] [--verify] [--keys keys.json] [--json]
+  token-monitor fingerprint [--db <path>]
 
 Commands:
   collect   Scan local agent logs (Claude Code, Gemini CLI, Codex) into SQLite
@@ -29,6 +31,12 @@ Commands:
             prioritized recommendations (sends aggregate metrics only)
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team report
+  fingerprint  Print this machine's signing-key fingerprint (for keyring enrollment)
+
+Integrity:
+  Exports from \`report --json\` are Ed25519-signed. \`merge --verify\` rejects
+  tampered or unsigned exports; add --keys keys.json ({"user": "fingerprint"})
+  to also pin who may sign for whom.
 
 Options:
   --source    one of: ${Object.keys(ADAPTERS).join(', ')} (default: all)
@@ -51,6 +59,8 @@ function main() {
       out: { type: 'string', default: 'report.html' },
       llm: { type: 'boolean', default: false },
       agent: { type: 'string' },
+      verify: { type: 'boolean', default: false },
+      keys: { type: 'string' },
       db: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -68,13 +78,26 @@ function main() {
       console.error('merge requires at least one export file (token-monitor report --json > me.json)');
       process.exit(1);
     }
+    const keyring = values.keys ? loadKeyring(values.keys) : undefined;
+    let verifyFailed = false;
     const exports: ExportV1[] = files.map((f) => {
       const data = JSON.parse(readFileSync(f, 'utf8'));
       if (data.version !== 1 || !data.overall) {
         throw new Error(`${f} is not a token-monitor v1 export`);
       }
+      if (values.verify || keyring) {
+        let vr = verifyObject(data);
+        if (vr.ok && keyring) vr = checkKeyring(keyring, data.user, vr.fingerprint!);
+        const mark = vr.ok ? '✓' : '✗';
+        console.error(`${mark} ${f} (${data.user})${vr.ok ? ` — signed by ${vr.fingerprint}` : ` — ${vr.reason}`}`);
+        if (!vr.ok) verifyFailed = true;
+      }
       return data as ExportV1;
     });
+    if (verifyFailed) {
+      console.error('\nVerification failed — refusing to merge. Fix or exclude the exports above.');
+      process.exit(1);
+    }
     const team = values.team ? parseTeamConfig(values.team) : {};
     if (values.json) {
       const overall = mergeMetrics(exports.map((e) => e.overall));
@@ -82,6 +105,12 @@ function main() {
     } else {
       console.log(renderTeamReport(exports, team));
     }
+    return;
+  }
+
+  if (cmd === 'fingerprint') {
+    const { publicPem } = ensureKeypair(keyDirFor(values.db));
+    console.log(fingerprint(publicPem));
     return;
   }
 
@@ -113,13 +142,11 @@ function main() {
     if (values.json) {
       const ex = buildExport(events, days);
       const persona = assignPersona(ex.overall);
-      console.log(
-        JSON.stringify(
-          { ...ex, persona, recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)] },
-          null,
-          2,
-        ),
+      const signed = signObject(
+        { ...ex, persona, recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)] },
+        keyDirFor(values.db),
       );
+      console.log(JSON.stringify(signed, null, 2));
     } else {
       // Follow-through baselines only on unfiltered runs, so --project/--source
       // slices can't pollute them.
