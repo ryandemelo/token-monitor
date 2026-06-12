@@ -1,0 +1,25 @@
+{
+  "name": "token-monitor",
+  "version": "0.1.0",
+  "description": "Measure how effectively your team spends AI coding-agent tokens (Claude Code, Gemini CLI, Codex) — activity breakdowns, usage personas, and recommendations.",
+  "license": "MIT",
+  "author": "Ryan",
+  "type": "module",
+  "bin": {
+    "token-monitor": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}
