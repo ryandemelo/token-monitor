@@ -77,8 +77,9 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | ✅ Verified — per-turn tokens, cache split, model, tools, git branch |
 | **Gemini CLI** | `~/.gemini/tmp/*/chats/*.json` | ✅ Verified — per-turn tokens incl. thoughts, tool calls |
 | **Codex CLI** | `~/.codex/sessions/**/rollout-*.jsonl` | ⚠️ Experimental — diffs cumulative `token_count` events; verify against Codex's own usage screens |
+| **Cursor** | `Cursor/User/globalStorage/state.vscdb` (SQLite) | ✅ Verified — per-turn tokens on completed turns, tool calls, agent/chat sessions. Cursor doesn't persist cache tokens or the resolved backend model (Auto mode reports as `cursor-auto`) |
 
-Adapters skip gracefully when a tool isn't installed.
+Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads only composer/bubble keys — never the auth entries that live in the same database.
 
 ## Team usage
 
