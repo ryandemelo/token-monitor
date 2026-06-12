@@ -50,7 +50,7 @@ The repo ships [`AGENTS.md`](AGENTS.md) and [`llms.txt`](llms.txt) so agents can
 |---|---|
 | **Activity breakdown** | Each turn is classified by its tool calls: *thinking/defining* (plan mode, reasoning-only turns), *exploration* (read/search), *coding* (edits), *testing* (test runners), *shipping* (commit/push/PR), *conversation*. |
 | **Cache hit ratio** | Cache reads cost ~10% of fresh input — the single biggest cost lever. Low ratios point at session and prompt-structure problems. |
-| **Rework ratio** | Share of tokens spent on code/test turns *after* the first test failure in a session. High rework usually means skipped planning. |
+| **Rework ratio** | Share of tokens spent on code/test turns *after* the first failed turn in a session. High rework usually means skipped planning. Distinct from `analyze`'s **fix iterations**, which counts testing→coding transitions — sessions that barely test can have high rework but zero visible fix loops. User-declined permission prompts are *not* counted as failures. |
 | **Think:code ratio** | Planning+exploration tokens per coding token. Too low correlates with high rework. |
 | **Model mix** | Premium-model tokens on turns a cheaper tier would handle. |
 | **Estimated cost** | API-equivalent USD from a built-in price table (`src/pricing.ts`). Non-Anthropic prices are placeholders marked `~` — edit to match your contract. |

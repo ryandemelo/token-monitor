@@ -52,3 +52,7 @@ test('tool-less turns: thinking if reasoning present, else conversation', () => 
 test('mcp-prefixed tool names are normalized', () => {
   assert.equal(classify(makeEvent({ tools: ['mcp__some_server__read_file'] })), 'exploration');
 });
+
+test('interactive prompt tools classify as conversation', () => {
+  assert.equal(classify(makeEvent({ tools: ['AskUserQuestion'] })), 'conversation');
+});

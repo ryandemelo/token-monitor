@@ -21,6 +21,9 @@ const PLAN_TOOLS = new Set([
   'enterplanmode', 'exitplanmode', 'todowrite', 'taskcreate', 'taskupdate', 'update_plan', 'plan',
 ]);
 
+// Interactive prompts to the user — conversation, not work.
+const INTERACTIVE_TOOLS = new Set(['askuserquestion', 'ask_user', 'request_user_input']);
+
 const TEST_RE =
   /\b(pytest|jest|vitest|mocha|playwright test|go test|cargo test|npm (run )?test|yarn test|pnpm test|bun test|phpunit|rspec|unittest|tox|mvn test|gradle test|ctest|make test|rails test)\b/i;
 
@@ -43,7 +46,11 @@ export function classify(ev: UsageEvent): Activity {
   if (TEST_RE.test(cmds)) return 'testing';
   if (tools.some((t) => WRITE_TOOLS.has(t))) return 'coding';
   if (tools.some((t) => PLAN_TOOLS.has(t))) return 'thinking';
-  if (tools.length > 0 && tools.every((t) => READ_TOOLS.has(t) || SHELL_TOOLS.has(t))) {
+  if (tools.length > 0 && tools.every((t) => INTERACTIVE_TOOLS.has(t))) return 'conversation';
+  if (
+    tools.length > 0 &&
+    tools.every((t) => READ_TOOLS.has(t) || SHELL_TOOLS.has(t) || INTERACTIVE_TOOLS.has(t))
+  ) {
     // Read-only turn; bare shell counts as exploration unless it tested/shipped (handled above).
     return 'exploration';
   }

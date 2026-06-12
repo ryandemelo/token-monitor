@@ -6,6 +6,24 @@ import { classify } from '../classify.js';
 
 const ROOT = join(homedir(), '.claude', 'projects');
 
+/**
+ * User declinations arrive as is_error tool_results but are choices, not
+ * failures — counting them poisons tool-error and rework metrics. Matches
+ * the harness's standard rejection/interruption phrasings.
+ */
+const DECLINED_RE =
+  /user doesn't want to proceed|tool use was rejected|user rejected|request interrupted by user|user declined/i;
+
+export function isDeclination(content: unknown): boolean {
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.map((b) => (typeof b?.text === 'string' ? b.text : '')).join(' ')
+        : '';
+  return DECLINED_RE.test(text);
+}
+
 interface ClaudeLine {
   type?: string;
   uuid?: string;
@@ -28,6 +46,7 @@ interface ClaudeLine {
       input?: { command?: string };
       tool_use_id?: string;
       is_error?: boolean;
+      content?: unknown;
     }>;
   };
 }
@@ -68,7 +87,12 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
         }
         if (d.type === 'user' && Array.isArray(d.message?.content)) {
           for (const block of d.message.content) {
-            if (block.type === 'tool_result' && block.is_error && block.tool_use_id) {
+            if (
+              block.type === 'tool_result' &&
+              block.is_error &&
+              block.tool_use_id &&
+              !isDeclination(block.content)
+            ) {
               const ev = byToolUseId.get(block.tool_use_id);
               if (ev) ev.isError = true;
             }
