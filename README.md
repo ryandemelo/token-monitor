@@ -100,6 +100,23 @@ token-monitor merge exports/*.json --team team.yaml
 
 The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill.
 
+## Deep analysis & LLM-powered recommendations
+
+`token-monitor analyze` goes a level deeper than the report — which sessions and habits burn the tokens:
+
+- **Most expensive sessions** — turns, fix loops, avg context per turn, duration, dominant activity
+- **Fix-loop sessions** — testing→coding churn
+- **Context-heavy sessions** — average tokens fed per turn (context-bloat proxy)
+- **Tool error rates** — tools that keep failing
+
+Add `--llm` and the aggregates go to a coding agent you already have installed (`claude`, `gemini`, or `codex` — auto-detected, override with `--agent`), which returns prioritized interventions with the evidence, the workflow change, and the metric to watch:
+
+```sh
+token-monitor analyze --llm
+```
+
+No API key management: it reuses your existing agent CLI and its subscription. The payload is the same aggregates-only data as `report --json` (token counts, ratios, tool names, project basenames — never prompts or code). It does leave your machine via that agent's provider, so skip `--llm` if even project names are sensitive.
+
 ## Follow-through
 
 Recommendations are tracked, not just printed. The first time one fires, its target metric is recorded as a baseline; every later report re-measures and shows the delta:
@@ -117,6 +134,7 @@ Resolved findings re-open automatically if the metric regresses.
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex] [--db <path>]
 token-monitor report  [--days 30] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team team.yaml] [--json]
 ```
@@ -137,6 +155,8 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 ## Privacy
 
 Everything stays on your machine. token-monitor reads log files locally, stores aggregate numbers in a local SQLite file, and never makes a network request. Prompt and code content is never stored — only token counts, tool names, timestamps, and project/branch names.
+
+The one opt-in exception: `analyze --llm` sends those aggregates to your own agent CLI's provider for analysis. Everything else is fully offline.
 
 ## License
 

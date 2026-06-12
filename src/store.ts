@@ -75,6 +75,8 @@ export interface StoredEvent {
   cache_read_tokens: number;
   cache_creation_tokens: number;
   thinking_tokens: number;
+  /** JSON-encoded string[] of tool names. */
+  tools: string;
   has_thinking: number;
   is_error: number;
   activity: string;
@@ -100,7 +102,7 @@ export function loadEvents(
   }
   const sql = `SELECT source, session_id, project, ts, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
-      has_thinking, is_error, activity
+      tools, has_thinking, is_error, activity
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
 }

@@ -9,6 +9,7 @@ import { buildExport, parseTeamConfig, mergeMetrics } from './team.js';
 import { syncFindings } from './followthrough.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml } from './html.js';
+import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
 import type { ExportV1 } from './team.js';
 import type { Source } from './types.js';
 
@@ -17,12 +18,15 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
   token-monitor report  [--days <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team team.yaml] [--json]
 
 Commands:
   collect   Scan local agent logs (Claude Code, Gemini CLI, Codex) into SQLite
   report    Activity breakdown, cost, personas, and recommendations
+  analyze   Session-level deep dive; --llm asks your local agent CLI for
+            prioritized recommendations (sends aggregate metrics only)
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team report
 
@@ -45,6 +49,8 @@ function main() {
       json: { type: 'boolean', default: false },
       team: { type: 'string' },
       out: { type: 'string', default: 'report.html' },
+      llm: { type: 'boolean', default: false },
+      agent: { type: 'string' },
       db: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -122,6 +128,26 @@ function main() {
           ? syncFindings(db, computeMetrics(events))
           : undefined;
       console.log(renderReport(events, { days, follow }));
+    }
+  } else if (cmd === 'analyze') {
+    const days = Number(values.days) || 30;
+    const events = loadEvents(db, { days, project: values.project, source: values.source });
+    if (events.length === 0) {
+      console.log('No events in range. Run `token-monitor collect` first, or widen --days.');
+      process.exit(0);
+    }
+    if (values.json) {
+      console.log(JSON.stringify(deepAnalysis(events), null, 2));
+    } else {
+      console.log(renderAnalysis(events, days));
+    }
+    if (values.llm) {
+      const agent = values.agent ?? detectAgent();
+      if (!agent) {
+        console.error('No agent CLI found (looked for: claude, gemini, codex). Install one or pass --agent.');
+        process.exit(1);
+      }
+      process.exit(runLlm(buildLlmPrompt(events, days), agent));
     }
   } else if (cmd === 'html') {
     const days = Number(values.days) || 30;
