@@ -12,6 +12,8 @@ npm test          # build + node:test suite
 
 Node ≥ 24, zero runtime dependencies (built-in `node:sqlite`, `node:util` parseArgs). Please keep it that way — the no-install-friction property is the point of the project.
 
+The suite has two layers: unit/integration tests per module, and `test/e2e.test.ts`, which spawns the built CLI as a subprocess against a synthetic `$HOME` seeded with the fixture logs and runs the full `collect → report → export → verify → merge → html → analyze` pipeline. If you add a command or flag, add an e2e case — unit tests alone don't cover the CLI wiring.
+
 ## Writing an adapter
 
 An adapter parses one agent CLI's local logs into normalized `UsageEvent`s (see `src/types.ts`). Per turn it should produce:
