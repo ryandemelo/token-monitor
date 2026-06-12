@@ -1,5 +1,5 @@
 {
-  "name": "token-monitor-vscode",
+  "name": "token-monitor",
   "displayName": "Token Monitor",
   "description": "Status-bar token/cost for the current project plus the token-monitor dashboard, for VS Code, Cursor, Windsurf, and Antigravity.",
   "version": "0.5.0",

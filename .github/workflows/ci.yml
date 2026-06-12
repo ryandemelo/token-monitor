@@ -39,5 +39,5 @@ jobs:
         working-directory: extension
       - uses: actions/upload-artifact@v4
         with:
-          name: token-monitor-vscode-vsix
+          name: token-monitor-extension-vsix
           path: extension/*.vsix
