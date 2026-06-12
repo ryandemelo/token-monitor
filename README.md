@@ -79,6 +79,7 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 | **Codex CLI** | `~/.codex/sessions/**/rollout-*.jsonl` | ⚠️ Experimental — diffs cumulative `token_count` events; verify against Codex's own usage screens |
 | **Cursor** | `Cursor/User/globalStorage/state.vscdb` (SQLite) | ✅ Verified — per-turn tokens on completed turns, tool calls, agent/chat sessions. Cursor doesn't persist cache tokens or the resolved backend model (Auto mode reports as `cursor-auto`) |
 | **Antigravity CLI** | `~/.gemini/antigravity-cli/conversations/*.db` (SQLite + protobuf) | ✅ Verified — per-call prompt/cached/output tokens, per-row model, tool steps, workspace + branch. Vendor-internal format: fails soft if the schema changes |
+| **Copilot Chat** (VS Code) | `Code/User/workspaceStorage/*/chatSessions/*` | ⚠️ Experimental — Copilot doesn't record token usage locally, so counts are **estimated** from text length (~4 chars/token) and models are suffixed `(est)`. Turn counts, timestamps, tools, and errors are real |
 
 Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads only composer/bubble keys — never the auth entries that live in the same database.
 
