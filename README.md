@@ -29,13 +29,20 @@ Where the tokens go (activity share of input+output)
 Requires Node.js ≥ 24 (uses the built-in `node:sqlite` — zero runtime dependencies).
 
 ```sh
-git clone https://github.com/ryandemelo/token-monitor && cd token-monitor
-npm install && npm run build && npm link
-
-token-monitor collect    # scan local agent logs into ~/.token-monitor/
-token-monitor report     # activity breakdown, personas, recommendations
-token-monitor html       # self-contained dashboard -> report.html
+npx github:ryandemelo/token-monitor collect   # scan local agent logs
+npx github:ryandemelo/token-monitor report    # activity breakdown, personas, recommendations
+npx github:ryandemelo/token-monitor html      # self-contained dashboard -> report.html
 ```
+
+Persistent install: `npm install -g github:ryandemelo/token-monitor`, then `token-monitor <command>`. For development: clone, `npm install && npm test`.
+
+### Or let your coding agent install it
+
+Paste this into Claude Code, Gemini CLI, or any coding agent:
+
+> Install token-monitor from https://github.com/ryandemelo/token-monitor (instructions in its AGENTS.md), run `collect` and `report`, and walk me through what my token usage says.
+
+The repo ships [`AGENTS.md`](AGENTS.md) and [`llms.txt`](llms.txt) so agents can install and operate it without guesswork.
 
 ## What it measures
 

@@ -1,0 +1,30 @@
+# token-monitor
+
+> Local-first CLI that measures how effectively a developer or team spends AI coding-agent tokens. Parses session logs that Claude Code, Gemini CLI, and Codex already write to disk; classifies every turn by activity (thinking / exploration / coding / testing / shipping); reports cache hit ratio, rework ratio, cost, usage personas, and tracked recommendations. Zero runtime dependencies, no API keys, no network calls — all data stays on the machine.
+
+## Install and run (requires Node.js >= 24)
+
+```sh
+npx github:ryandemelo/token-monitor collect   # scan local agent logs into ~/.token-monitor/
+npx github:ryandemelo/token-monitor report    # terminal report
+npx github:ryandemelo/token-monitor html      # self-contained dashboard -> report.html
+```
+
+Or persistent install: `npm install -g github:ryandemelo/token-monitor`, then use `token-monitor <command>`.
+
+## Commands
+
+- `collect [--source claude-code|gemini-cli|codex] [--db <path>]` — parse local logs into SQLite (idempotent, safe to re-run)
+- `report [--days 30] [--project <name>] [--json] [--db <path>]` — activity breakdown, personas, recommendations, follow-through deltas
+- `html [--out report.html] [--days 30]` — static dashboard, no server
+- `merge <export.json>... [--team team.yaml]` — combine member exports (`report --json`) into a per-discipline team report
+
+## Key files
+
+- README.md — full usage, metrics definitions, personas
+- CONTRIBUTING.md — how to add an adapter for another agent CLI
+- src/types.ts — the normalized UsageEvent schema adapters produce
+
+## Privacy
+
+Stores aggregate numbers only (token counts, tool names, timestamps, project basenames) — never prompt or code content. `report --json` exports are aggregates and safe to share for team rollups.
