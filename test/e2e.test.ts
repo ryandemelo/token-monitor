@@ -5,6 +5,8 @@ import { mkdtempSync, cpSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { makeCursorFixture } from './helpers.js';
+import { cursorUserDir } from '../src/adapters/cursor.js';
 
 /**
  * True end-to-end: runs the built CLI as a subprocess against a synthetic
@@ -22,12 +24,14 @@ const HOME = mkdtempSync(join(tmpdir(), 'tm-e2e-home-'));
 cpSync(join(FIXTURES, 'claude'), join(HOME, '.claude', 'projects'), { recursive: true });
 cpSync(join(FIXTURES, 'gemini'), join(HOME, '.gemini', 'tmp'), { recursive: true });
 cpSync(join(FIXTURES, 'codex'), join(HOME, '.codex', 'sessions'), { recursive: true });
+makeCursorFixture(cursorUserDir(HOME));
 
 function run(args: string[], opts: { home?: string } = {}) {
   const home = opts.home ?? HOME;
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    // APPDATA keeps win32 path resolution inside the synthetic home too.
+    env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming') },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status };
 }
@@ -35,12 +39,13 @@ function run(args: string[], opts: { home?: string } = {}) {
 // Fixture windows are dated 2026-06-01; keep a generous window.
 const DAYS = ['--days', '36500'];
 
-test('e2e: collect parses all three sources into the default db', () => {
+test('e2e: collect parses all sources into the default db', () => {
   const { stdout, code } = run(['collect']);
   assert.equal(code, 0);
   assert.match(stdout, /claude-code\s+\d+ files\s+3 turns\s+3 new/);
   assert.match(stdout, /gemini-cli\s+\d+ files\s+2 turns\s+2 new/);
   assert.match(stdout, /codex\s+\d+ files\s+2 turns\s+2 new/);
+  assert.match(stdout, /cursor\s+\d+ files\s+2 turns\s+2 new/);
   assert.ok(existsSync(join(HOME, '.token-monitor', 'token-monitor.sqlite')));
 });
 
@@ -53,7 +58,7 @@ test('e2e: collect is idempotent', () => {
 test('e2e: report renders all sections from collected data', () => {
   const { stdout, code } = run(['report', ...DAYS]);
   assert.equal(code, 0);
-  for (const expected of ['Where the tokens go', 'By project', 'By model', 'Recommendations', 'proj-alpha', 'proj-g', 'proj-c', 'gpt-5-codex']) {
+  for (const expected of ['Where the tokens go', 'By project', 'By model', 'Recommendations', 'proj-alpha', 'proj-g', 'proj-c', 'proj-cur', 'gpt-5-codex']) {
     assert.ok(stdout.includes(expected), `report missing "${expected}"`);
   }
 });
@@ -62,7 +67,7 @@ test('e2e: report --json emits a signed v1 export; fingerprint command matches i
   const exportJson = run(['report', '--json', ...DAYS]).stdout;
   const data = JSON.parse(exportJson);
   assert.equal(data.version, 1);
-  assert.equal(data.overall.events, 7); // 3 claude + 2 gemini + 2 codex
+  assert.equal(data.overall.events, 9); // 3 claude + 2 gemini + 2 codex + 2 cursor
   assert.equal(data.sig.alg, 'ed25519');
 
   const fp = run(['fingerprint']).stdout.trim();
