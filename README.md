@@ -82,6 +82,29 @@ Adapters skip gracefully when a tool isn't installed.
 
 ## Team usage
 
+### Remote rollout (lead → team)
+
+The lead hosts one config file anywhere (gist, internal wiki, S3) and sends one line — pasteable by the dev, an MDM/onboarding script, or their coding agent:
+
+```sh
+npx github:ryandemelo/token-monitor init --from https://example.com/team-config.json
+```
+
+```jsonc
+// team-config.json
+{
+  "teamName": "acme-eng",
+  "push": { "type": "http", "url": "https://reports.example.com/token-monitor" },
+  // or: "push": { "type": "path", "dir": "/Volumes/shared/token-monitor" }
+  "scheduleHours": 24,
+  "windowDays": 30
+}
+```
+
+`init` saves the config, generates the signing keypair, runs the first collection, installs the recurring collect+push job (launchd on macOS, cron on Linux), and prints the dev's fingerprint for the lead's `keys.json`. From then on signed exports arrive on schedule; the lead runs `merge <files> --verify --keys keys.json`. `token-monitor schedule --remove` uninstalls.
+
+### Manual flow
+
 Each developer exports locally; the JSON contains aggregate metrics only (no prompts, no code, no file paths beyond project basenames), so it's safe to share:
 
 ```sh

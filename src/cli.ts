@@ -10,7 +10,9 @@ import { syncFindings } from './followthrough.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
-import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor } from './sign.js';
+import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor, DEFAULT_KEY_DIR } from './sign.js';
+import { fetchTeamConfig, saveConfig, loadConfig, pushExport, installSchedule, removeSchedule } from './deploy.js';
+import { realpathSync } from 'node:fs';
 import type { ExportV1 } from './team.js';
 import type { Source } from './types.js';
 
@@ -22,6 +24,9 @@ Usage:
   token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team team.yaml] [--verify] [--keys keys.json] [--json]
+  token-monitor init    --from <url-or-path>
+  token-monitor push    [--db <path>]
+  token-monitor schedule [--hours <n>] [--remove]
   token-monitor fingerprint [--db <path>]
 
 Commands:
@@ -31,6 +36,10 @@ Commands:
             prioritized recommendations (sends aggregate metrics only)
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team report
+  init      Join a team: fetch the lead's config, set up keys, first collect,
+            and (if configured) install the collection schedule
+  push      Sign and deliver an export to the team destination from config
+  schedule  Install/remove a recurring collect+push job (launchd/cron)
   fingerprint  Print this machine's signing-key fingerprint (for keyring enrollment)
 
 Integrity:
@@ -47,7 +56,36 @@ Options:
   --db        SQLite path (default: ${DEFAULT_DB})
 `;
 
-function main() {
+function buildSignedExportJson(
+  db: ReturnType<typeof openDb>,
+  days: number,
+  dbPath?: string,
+  filters: { project?: string; source?: string } = {},
+): string {
+  const events = loadEvents(db, { days, ...filters });
+  const ex = buildExport(events, days);
+  const persona = assignPersona(ex.overall);
+  const signed = signObject(
+    { ...ex, persona, recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)] },
+    keyDirFor(dbPath),
+  );
+  return JSON.stringify(signed, null, 2);
+}
+
+function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
+  for (const source of sources) {
+    const { events, result } = ADAPTERS[source]();
+    result.eventsInserted = insertEvents(db, events);
+    const note = result.note ? `  (${result.note})` : '';
+    console.log(
+      `${source.padEnd(12)} ${String(result.filesScanned).padStart(5)} files  ` +
+        `${String(result.eventsFound).padStart(7)} turns  ` +
+        `${String(result.eventsInserted).padStart(7)} new${note}`,
+    );
+  }
+}
+
+async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -61,6 +99,9 @@ function main() {
       agent: { type: 'string' },
       verify: { type: 'boolean', default: false },
       keys: { type: 'string' },
+      from: { type: 'string' },
+      hours: { type: 'string' },
+      remove: { type: 'boolean', default: false },
       db: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -120,33 +161,57 @@ function main() {
     const sources = values.source
       ? [values.source as Source]
       : (Object.keys(ADAPTERS) as Source[]);
-    for (const source of sources) {
-      const adapter = ADAPTERS[source];
-      if (!adapter) {
-        console.error(`Unknown source "${source}". Valid: ${Object.keys(ADAPTERS).join(', ')}`);
-        process.exit(1);
-      }
-      const { events, result } = adapter();
-      result.eventsInserted = insertEvents(db, events);
-      const note = result.note ? `  (${result.note})` : '';
-      console.log(
-        `${source.padEnd(12)} ${String(result.filesScanned).padStart(5)} files  ` +
-          `${String(result.eventsFound).padStart(7)} turns  ` +
-          `${String(result.eventsInserted).padStart(7)} new${note}`,
-      );
+    if (values.source && !ADAPTERS[values.source as Source]) {
+      console.error(`Unknown source "${values.source}". Valid: ${Object.keys(ADAPTERS).join(', ')}`);
+      process.exit(1);
     }
+    runCollect(db, sources);
     console.log(`\nStored in ${values.db ?? DEFAULT_DB}. Run \`token-monitor report\` next.`);
+  } else if (cmd === 'init') {
+    if (!values.from) {
+      console.error('init requires --from <url-or-path> pointing at the team config JSON');
+      process.exit(1);
+    }
+    const dir = keyDirFor(values.db) ?? DEFAULT_KEY_DIR;
+    const config = await fetchTeamConfig(values.from);
+    saveConfig(config, dir);
+    const { publicPem } = ensureKeypair(keyDirFor(values.db));
+    console.log(`Joined team "${config.teamName}". First collection:\n`);
+    runCollect(db, Object.keys(ADAPTERS) as Source[]);
+    let scheduleNote = 'none configured — run `token-monitor push` manually';
+    if (config.scheduleHours) {
+      scheduleNote = installSchedule(process.execPath, realpathSync(process.argv[1]), config.scheduleHours);
+    }
+    console.log(`
+Schedule: ${scheduleNote}
+Signing fingerprint (send to your team lead for keys.json):
+
+  ${fingerprint(publicPem)}
+`);
+  } else if (cmd === 'push') {
+    const config = loadConfig(keyDirFor(values.db) ?? DEFAULT_KEY_DIR);
+    const days = Number(values.days) || config.windowDays || 30;
+    const where = await pushExport(buildSignedExportJson(db, days, values.db), config);
+    console.log(`Export (last ${days} days, signed) — ${where}`);
+  } else if (cmd === 'schedule') {
+    if (values.remove) {
+      console.log(removeSchedule());
+    } else {
+      let hours = Number(values.hours) || 0;
+      if (!hours) {
+        try {
+          hours = loadConfig(keyDirFor(values.db) ?? DEFAULT_KEY_DIR).scheduleHours ?? 24;
+        } catch {
+          hours = 24;
+        }
+      }
+      console.log(installSchedule(process.execPath, realpathSync(process.argv[1]), hours));
+    }
   } else if (cmd === 'report') {
     const days = Number(values.days) || 30;
     const events = loadEvents(db, { days, project: values.project, source: values.source });
     if (values.json) {
-      const ex = buildExport(events, days);
-      const persona = assignPersona(ex.overall);
-      const signed = signObject(
-        { ...ex, persona, recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)] },
-        keyDirFor(values.db),
-      );
-      console.log(JSON.stringify(signed, null, 2));
+      console.log(buildSignedExportJson(db, days, values.db, { project: values.project, source: values.source }));
     } else {
       // Follow-through baselines only on unfiltered runs, so --project/--source
       // slices can't pollute them.
@@ -189,4 +254,7 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});
