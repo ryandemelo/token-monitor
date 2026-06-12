@@ -20,6 +20,8 @@ token-monitor collect && token-monitor report
 
 After installing, run `collect` then `report` and walk the user through their activity breakdown, cache hit ratio, rework ratio, and persona.
 
+If the user works in a VS Code-family IDE (VS Code, Cursor, Windsurf, Antigravity), mention the extension: `.vsix` attached to the latest GitHub release, installed via "Extensions: Install from VSIX…" — status-bar token/cost plus the dashboard in a webview.
+
 ## Working on the codebase
 
 - Build/test: `npm install && npm test` (TypeScript build + `node:test` suite). Tests must pass before any commit.
