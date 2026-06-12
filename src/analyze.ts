@@ -203,6 +203,7 @@ ${JSON.stringify(buildLlmPayload(events, days))}`;
 
 export function renderAnalysis(events: StoredEvent[], days: number): string {
   const deep = deepAnalysis(events);
+  const m = computeMetrics(events);
   const out: string[] = [];
   const sessRow = (s: SessionStat) => [
     s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
@@ -224,6 +225,10 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
   if (deep.fixLoopSessions.length) {
     out.push(`\n${'\x1b[1m'}Fix-loop sessions (testing→coding churn)${'\x1b[0m'}`);
     out.push(table(headers, deep.fixLoopSessions.map(sessRow)));
+  } else if (m.byActivity.testing.share < 0.02 && m.reworkRatio > 0.1) {
+    out.push(
+      `\n\x1b[33m⚠\x1b[0m rework ratio is ${(m.reworkRatio * 100).toFixed(0)}% but testing is only ${(m.byActivity.testing.share * 100).toFixed(1)}% of spend — fix-loop detection needs test turns to see churn. The rework is real; the loops are invisible because little gets tested.`,
+    );
   }
   if (deep.contextHeavySessions.length) {
     out.push(`\n${'\x1b[1m'}Context-heavy sessions (avg tokens fed per turn)${'\x1b[0m'}`);

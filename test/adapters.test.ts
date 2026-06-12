@@ -11,9 +11,9 @@ const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test
 
 test('claude-code adapter parses turns, links tool errors, classifies', () => {
   const { events } = collectClaudeCode(join(FIXTURES, 'claude'));
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 3);
 
-  const [e1, e2] = events;
+  const [e1, e2, e3] = events;
   assert.equal(e1.eventKey, 'u1');
   assert.equal(e1.project, 'proj-alpha');
   assert.equal(e1.gitBranch, 'main');
@@ -28,6 +28,11 @@ test('claude-code adapter parses turns, links tool errors, classifies', () => {
   assert.equal(e2.activity, 'thinking');
   assert.equal(e2.hasThinking, true);
   assert.equal(e2.isError, false);
+
+  // user-declined prompt: an is_error tool_result, but a choice — not a failure
+  assert.equal(e3.eventKey, 'u3');
+  assert.equal(e3.activity, 'conversation'); // AskUserQuestion is interactive
+  assert.equal(e3.isError, false);
 });
 
 test('gemini-cli adapter parses checkpoints incl. thoughts and tool errors', () => {
@@ -77,4 +82,13 @@ test('adapters return a note instead of throwing when logs are absent', () => {
     assert.equal(events.length, 0);
     assert.ok(result.note);
   }
+});
+
+test('isDeclination matches harness rejection phrasings, not real errors', async () => {
+  const { isDeclination } = await import('../src/adapters/claude-code.js');
+  assert.equal(isDeclination("The user doesn't want to proceed with this tool use. The tool use was rejected."), true);
+  assert.equal(isDeclination('Request interrupted by user'), true);
+  assert.equal(isDeclination([{ type: 'text', text: 'The user rejected the edit' }]), true);
+  assert.equal(isDeclination('<tool_use_error>InputValidationError: too_big</tool_use_error>'), false);
+  assert.equal(isDeclination('Error: ENOENT no such file'), false);
 });
