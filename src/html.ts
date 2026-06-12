@@ -8,7 +8,7 @@ import { fmtMetric } from './followthrough.js';
 import { fmtTokens } from './report.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
-import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
+import { enrichFindings, fmtSavings, fmtEvidence, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
@@ -119,13 +119,14 @@ export function renderHtml(
 <table><tr><th>Project</th><th>Previous</th><th>Now</th><th>Change</th></tr>${movers}</table>`;
   }
 
+  const rates = blendedRates(m);
   const followSection =
     opts.follow && opts.follow.length
-      ? `<h2>Follow-through</h2><table><tr><th>Recommendation</th><th>Metric</th><th>Baseline</th><th>Now</th><th>Since</th><th>Status</th></tr>${opts.follow
-          .map(
-            (f) =>
-              `<tr><td>${esc(f.key)}</td><td>${f.metric}</td><td class="num">${fmtMetric(f.metric, f.baseline)}</td><td class="num">${fmtMetric(f.metric, f.current)}</td><td>${f.createdAt.slice(0, 10)}</td><td class="st-${f.status}">${f.status}</td></tr>`,
-          )
+      ? `<h2>Follow-through</h2><table><tr><th>Recommendation</th><th>Metric</th><th>Baseline</th><th>Now</th><th>Realized</th><th>Since</th><th>Status</th></tr>${opts.follow
+          .map((f) => {
+            const realized = realizedMonthly(f, m, rates, opts.days);
+            return `<tr><td>${esc(f.key)}</td><td>${f.metric}</td><td class="num">${fmtMetric(f.metric, f.baseline)}</td><td class="num">${fmtMetric(f.metric, f.current)}</td><td class="num">${realized ? `<span class="save">+${fmtUsdShort(realized)}/mo</span>` : '<span class="muted">—</span>'}</td><td>${f.createdAt.slice(0, 10)}</td><td class="st-${f.status}">${f.status}</td></tr>`;
+          })
           .join('')}</table>`
       : '';
 
@@ -149,6 +150,7 @@ ${trendSection}
 <div class="persona">
   <h3>${persona.emoji} ${esc(persona.name)}</h3>
   <div class="muted">${esc(persona.description)}</div>
+  ${(() => { const p = potentialBill(enriched, m, opts.days); return p ? `<div class="potential">${esc(fmtPotential(p))}</div>` : ''; })()}
   <ul class="recs">${recItems}</ul>
 </div>
 ${followSection}`,
@@ -182,6 +184,7 @@ function pageShell(title: string, body: string): string {
   ul.recs { margin:.4rem 0 0; padding-left:1.2rem; } ul.recs li { margin:.3rem 0; }
   .save { color:#5dc98a; font-weight:600; white-space:nowrap; }
   .ev { font-size:.8rem; margin-top:.15rem; }
+  .potential { margin:.5rem 0 .2rem; font-weight:600; color:#9fd45d; }
   .st-resolved { color:#5dc98a; } .st-regressing { color:#e88f68; } .st-improving { color:#9fd45d; }
   footer { margin:2.5rem 0 1rem; font-size:.8rem; color:#717a8a; }
 </style></head><body>

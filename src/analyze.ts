@@ -7,7 +7,7 @@ import { structuredFindings } from './followthrough.js';
 import type { Activity } from './types.js';
 import { ACTIVITIES } from './types.js';
 import { table, section, fmtTokens, renderEnrichedRecs } from './report.js';
-import { enrichFindings } from './recommendations.js';
+import { enrichFindings, potentialBill, fmtPotential } from './recommendations.js';
 
 /**
  * Deeper, session-level analysis. The report answers "where do tokens go";
@@ -327,6 +327,8 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
   const recs = enrichFindings(events, m, days);
   if (recs.length) {
     out.push(`\n${'\x1b[1m'}\x1b[32mRecommendations (evidence-cited)\x1b[0m`);
+    const potential = potentialBill(recs, m, days);
+    if (potential) out.push(`  ${'\x1b[1m'}${fmtPotential(potential)}\x1b[0m`);
     out.push(...renderEnrichedRecs(recs));
   }
   out.push(
