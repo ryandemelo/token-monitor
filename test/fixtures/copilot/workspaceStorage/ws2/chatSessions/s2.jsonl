@@ -1,0 +1,2 @@
+{"kind":0,"v":{"version":3,"sessionId":"cop-s2","creationDate":1780000200000,"requests":[{"requestId":"r1","message":{"text":"Refactor the parser"},"response":[{"value":"Done — extracted tokenize() and parse()."}]}]}}
+{"kind":2,"path":["requests",0,"followups"],"v":[]}

@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "sessionId": "cop-s1",
+  "creationDate": 1780000000000,
+  "lastMessageDate": 1780000100000,
+  "requesterUsername": "dev",
+  "responderUsername": "GitHub Copilot",
+  "requests": [
+    {
+      "requestId": "r1",
+      "timestamp": 1780000050000,
+      "modelId": "copilot/gpt-4.1",
+      "message": { "text": "Fix the failing test in utils.spec.ts" },
+      "response": [
+        { "kind": "toolInvocationSerialized", "toolId": "copilot_runInTerminal", "invocationMessage": { "value": "npm test" } },
+        { "kind": "markdownContent", "content": { "value": "The test fails because the fixture date is wrong. Updated it." } }
+      ],
+      "result": { "timings": { "totalElapsed": 4000 } }
+    },
+    {
+      "requestId": "r2",
+      "message": { "text": "thanks" },
+      "response": [ { "value": "You're welcome!" } ],
+      "result": { "errorDetails": { "message": "Rate limited" } }
+    }
+  ]
+}

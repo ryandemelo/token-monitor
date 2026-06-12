@@ -4,6 +4,7 @@ import { collectGeminiCli } from './gemini-cli.js';
 import { collectCodex } from './codex.js';
 import { collectCursor } from './cursor.js';
 import { collectAntigravity } from './antigravity.js';
+import { collectCopilot } from './copilot.js';
 
 export type Adapter = () => { events: UsageEvent[]; result: CollectResult };
 
@@ -19,4 +20,5 @@ export const ADAPTERS: Record<Source, Adapter> = {
   codex: collectCodex,
   cursor: collectCursor,
   antigravity: collectAntigravity,
+  copilot: collectCopilot,
 };

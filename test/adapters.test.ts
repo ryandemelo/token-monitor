@@ -7,6 +7,7 @@ import { collectGeminiCli } from '../src/adapters/gemini-cli.js';
 import { collectCodex } from '../src/adapters/codex.js';
 import { collectCursor } from '../src/adapters/cursor.js';
 import { collectAntigravity } from '../src/adapters/antigravity.js';
+import { collectCopilot } from '../src/adapters/copilot.js';
 import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -145,8 +146,37 @@ test('cursor adapter emits turn-final token events, maps workspaces, skips abort
   assert.ok(result.note?.includes('completed turns'));
 });
 
+test('copilot adapter estimates tokens from text, parses json and jsonl sessions', () => {
+  const { events, result } = collectCopilot(join(FIXTURES, 'copilot'));
+
+  assert.equal(result.filesScanned, 3);
+  assert.equal(events.length, 3); // empty stub session yields nothing
+  assert.ok(result.note?.includes('EXPERIMENTAL'));
+  const [r1, r2, s2] = events;
+
+  assert.equal(r1.eventKey, 'cop-s1:r1');
+  assert.equal(r1.project, 'proj-cop1');
+  assert.equal(r1.model, 'copilot/gpt-4.1 (est)');
+  assert.equal(r1.timestamp, new Date(1780000050000).toISOString());
+  assert.equal(r1.inputTokens, Math.ceil('Fix the failing test in utils.spec.ts'.length / 4));
+  assert.equal(r1.outputTokens, Math.ceil('The test fails because the fixture date is wrong. Updated it.'.length / 4));
+  assert.deepEqual(r1.tools, ['copilot_runInTerminal']);
+  assert.deepEqual(r1.commands, ['npm test']);
+  assert.equal(r1.activity, 'testing');
+  assert.equal(r1.isError, false);
+
+  assert.equal(r2.isError, true); // errorDetails without cancellation
+  assert.equal(r2.activity, 'conversation');
+  assert.equal(r2.model, 'copilot (est)'); // no modelId on the request
+
+  // .jsonl: line 0 snapshot parsed, later ops ignored
+  assert.equal(s2.sessionId, 'cop-s2');
+  assert.equal(s2.project, 'proj-cop2');
+  assert.equal(s2.timestamp, new Date(1780000200000).toISOString());
+});
+
 test('adapters return a note instead of throwing when logs are absent', () => {
-  for (const collect of [collectClaudeCode, collectGeminiCli, collectCodex, collectCursor, collectAntigravity]) {
+  for (const collect of [collectClaudeCode, collectGeminiCli, collectCodex, collectCursor, collectAntigravity, collectCopilot]) {
     const { events, result } = collect('/nonexistent/path/xyz');
     assert.equal(events.length, 0);
     assert.ok(result.note);
