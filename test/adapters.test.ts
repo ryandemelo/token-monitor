@@ -6,7 +6,8 @@ import { collectClaudeCode } from '../src/adapters/claude-code.js';
 import { collectGeminiCli } from '../src/adapters/gemini-cli.js';
 import { collectCodex } from '../src/adapters/codex.js';
 import { collectCursor } from '../src/adapters/cursor.js';
-import { makeCursorFixture } from './helpers.js';
+import { collectAntigravity } from '../src/adapters/antigravity.js';
+import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -80,6 +81,42 @@ test('codex adapter diffs cumulative token counts into per-turn events', () => {
   assert.equal(t2.activity, 'coding'); // apply_patch
 });
 
+test('antigravity adapter decodes gen_metadata blobs and attributes tool steps', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tm-antigravity-fixture-'));
+  makeAntigravityFixture(root);
+  const { events, result } = collectAntigravity(root);
+
+  assert.equal(result.filesScanned, 1);
+  assert.equal(events.length, 3);
+  const [g0, g1, g2] = events;
+
+  assert.equal(g0.eventKey, 'conv-1:0');
+  assert.equal(g0.sessionId, 'conv-1');
+  assert.equal(g0.project, 'proj-anti'); // trajectory_metadata_blob workspace URI
+  assert.equal(g0.gitBranch, 'feat/x');
+  assert.equal(g0.model, 'gemini-3-flash-a');
+  assert.equal(g0.inputTokens, 1000);
+  assert.equal(g0.outputTokens, 50);
+  assert.equal(g0.cacheReadTokens, 0); // f5 absent = 0
+  assert.equal(g0.timestamp, new Date(1780000000500).toISOString());
+  assert.deepEqual(g0.tools, ['view_file']); // steps between this and next gen snapshot
+  assert.equal(g0.activity, 'exploration');
+  assert.equal(g0.isError, false);
+
+  assert.equal(g1.inputTokens, 1500);
+  assert.equal(g1.cacheReadTokens, 2000);
+  assert.deepEqual(g1.commands, ['npm test']);
+  assert.equal(g1.activity, 'testing');
+  assert.equal(g1.isError, true); // run_command failed with "exit status 1"
+
+  assert.equal(g2.model, 'Claude Sonnet'); // f21 display-name fallback
+  assert.equal(g2.isError, false); // "context canceled" is a user choice, not a failure
+  assert.equal(g2.activity, 'exploration'); // bare shell command
+
+  // Privacy: no conversation text in output.
+  assert.ok(!JSON.stringify(events).includes('long trace'));
+});
+
 test('cursor adapter emits turn-final token events, maps workspaces, skips aborted turns', () => {
   const userDir = mkdtempSync(join(tmpdir(), 'tm-cursor-fixture-'));
   makeCursorFixture(userDir);
@@ -109,7 +146,7 @@ test('cursor adapter emits turn-final token events, maps workspaces, skips abort
 });
 
 test('adapters return a note instead of throwing when logs are absent', () => {
-  for (const collect of [collectClaudeCode, collectGeminiCli, collectCodex, collectCursor]) {
+  for (const collect of [collectClaudeCode, collectGeminiCli, collectCodex, collectCursor, collectAntigravity]) {
     const { events, result } = collect('/nonexistent/path/xyz');
     assert.equal(events.length, 0);
     assert.ok(result.note);
