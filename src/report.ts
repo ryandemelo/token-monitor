@@ -8,7 +8,7 @@ import { mergeMetrics, rollupExports, dominantActivity, displayName } from './te
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import type { EnrichedRec } from './recommendations.js';
-import { enrichFindings, fmtSavings, fmtEvidence } from './recommendations.js';
+import { enrichFindings, fmtSavings, fmtEvidence, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
@@ -134,22 +134,30 @@ export function renderReport(
   out.push(section(`Overall persona: ${persona.emoji} ${persona.name}`));
   out.push(`  ${persona.description}\n`);
   out.push(`${BOLD}${GREEN}Recommendations${RESET}`);
+  const enriched = enrichFindings(events, m, opts.days);
+  const potential = potentialBill(enriched, m, opts.days);
+  if (potential) out.push(`  ${BOLD}${fmtPotential(potential)}${RESET}`);
   for (const r of persona.recommendations) out.push(`  ${YELLOW}→${RESET} ${r}`);
-  out.push(...renderEnrichedRecs(enrichFindings(events, m, opts.days)));
+  out.push(...renderEnrichedRecs(enriched));
 
   if (opts.follow && opts.follow.length > 0) {
+    const rates = blendedRates(m);
     out.push(section('Follow-through (recommendation → measured change)'));
     out.push(
       table(
-        ['Recommendation', 'Metric', 'Baseline', 'Now', 'Since', 'Status'],
-        opts.follow.map((f) => [
-          f.key,
-          f.metric,
-          fmtMetric(f.metric, f.baseline),
-          fmtMetric(f.metric, f.current),
-          f.createdAt.slice(0, 10),
-          STATUS_LABEL[f.status],
-        ]),
+        ['Recommendation', 'Metric', 'Baseline', 'Now', 'Realized', 'Since', 'Status'],
+        opts.follow.map((f) => {
+          const realized = realizedMonthly(f, m, rates, opts.days);
+          return [
+            f.key,
+            f.metric,
+            fmtMetric(f.metric, f.baseline),
+            fmtMetric(f.metric, f.current),
+            realized ? `${GREEN}+${fmtUsdShort(realized)}/mo${RESET}` : `${DIM}—${RESET}`,
+            f.createdAt.slice(0, 10),
+            STATUS_LABEL[f.status],
+          ];
+        }),
       ),
     );
   }

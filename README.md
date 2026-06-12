@@ -187,6 +187,12 @@ Every threshold-fired recommendation answers "why should I believe this and what
 
 These show up in `report`, `analyze`, the HTML dashboard, and ride along in signed exports (`recommendationDetails`).
 
+Three more pieces of intelligence:
+
+- **Personalized targets** — with enough sessions, targets come from *your own* top-quartile sessions ("your best sessions already hit 92% cache") instead of static heuristics; thin data falls back to the static targets.
+- **Honest combined math** — overlapping levers are grouped into families (caching / routing / rework) and de-overlapped, giving one headline: `Potential: $18.8k/mo → $8.9k/mo (routing −$9.2k · caching −$712)`. Recommendations sort by their marginal value.
+- **Realized savings** — once a tracked recommendation's metric moves, follow-through prices the move: `Realized +$70/mo`. The advice proves (or disproves) its own worth.
+
 ## Follow-through
 
 Recommendations are tracked, not just printed. The first time one fires, its target metric is recorded as a baseline; every later report re-measures and shows the delta:
