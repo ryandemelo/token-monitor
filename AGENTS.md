@@ -16,7 +16,7 @@ npm install -g github:ryandemelo/token-monitor
 token-monitor collect && token-monitor report
 ```
 
-`collect` reads the user's local agent session logs (`~/.claude/projects/`, `~/.gemini/tmp/`, `~/.codex/sessions/`) into `~/.token-monitor/token-monitor.sqlite`. It is idempotent — safe to re-run any time. `report` prints the analysis; `html` writes a dashboard file; nothing makes network calls.
+`collect` reads the user's local agent session logs (`~/.claude/projects/`, `~/.gemini/tmp/`, `~/.codex/sessions/`, Cursor's `state.vscdb`, `~/.gemini/antigravity-cli/`, VS Code `chatSessions/`) into `~/.token-monitor/token-monitor.sqlite`. It is idempotent — safe to re-run any time. `report` prints the analysis; `html` writes a dashboard file; nothing makes network calls.
 
 After installing, run `collect` then `report` and walk the user through their activity breakdown, cache hit ratio, rework ratio, and persona.
 

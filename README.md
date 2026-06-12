@@ -5,7 +5,7 @@
 
 Measure how effectively your team spends AI coding-agent tokens — locally, with zero setup.
 
-Most token dashboards tell you *how much* you spent. token-monitor tells you *what you spent it on* — separating thinking and defining from actual coding, testing, and shipping — and what to change. It parses the session logs that Claude Code, Gemini CLI, and Codex already write to your machine. No API keys, no server, no telemetry.
+Most token dashboards tell you *how much* you spent. token-monitor tells you *what you spent it on* — separating thinking and defining from actual coding, testing, and shipping — and what to change. It parses the session logs that Claude Code, Gemini CLI, Codex, Cursor, Antigravity, and Copilot Chat already write to your machine. No API keys, no server, no telemetry.
 
 ```
 Where the tokens go (activity share of input+output)
@@ -158,7 +158,7 @@ Resolved findings re-open automatically if the metric regresses.
 ## CLI
 
 ```
-token-monitor collect [--source claude-code|gemini-cli|codex] [--db <path>]
+token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
 token-monitor report  [--days 30] [--project <name>] [--source <name>] [--json] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
@@ -174,7 +174,9 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] Team rollups: `merge` command + `team.yaml` discipline mapping
 - [x] Self-contained HTML dashboard
 - [x] Follow-through tracking: baseline on first firing, delta on every later report
-- [ ] Adapters: Aider, OpenCode, Cursor
+- [x] IDE coverage: Cursor, Antigravity, Copilot Chat adapters
+- [ ] Adapters: Aider, OpenCode, Windsurf (needs a contributor with Windsurf — #12)
+- [ ] VS Code-family extension: status-bar cost + dashboard webview (#13)
 - [ ] Org-level cross-check via provider usage APIs
 - [ ] npm publish
 
