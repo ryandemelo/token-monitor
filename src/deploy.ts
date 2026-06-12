@@ -8,7 +8,7 @@ import { DEFAULT_KEY_DIR } from './sign.js';
  * Team rollout. A lead hosts one config file; each dev (or their MDM /
  * onboarding script / coding agent) runs:
  *
- *   npx github:ryandemelo/token-monitor init --from <url>
+ *   npx @ryandemelo/token-monitor init --from <url>
  *
  * init stores the config, generates the signing keypair, runs a first
  * collect, optionally installs the collection schedule, and prints the

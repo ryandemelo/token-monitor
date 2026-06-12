@@ -1,9 +1,29 @@
 {
-  "name": "token-monitor",
+  "name": "@ryandemelo/token-monitor",
   "version": "0.4.0",
-  "description": "Measure how effectively your team spends AI coding-agent tokens (Claude Code, Gemini CLI, Codex) — activity breakdowns, usage personas, and recommendations.",
+  "description": "Measure how effectively your team spends AI coding-agent tokens (Claude Code, Gemini CLI, Codex, Cursor, Antigravity, Copilot Chat) — activity breakdowns, usage personas, and recommendations.",
   "license": "MIT",
-  "author": "Ryan",
+  "author": "Ryan de Melo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryandemelo/token-monitor.git"
+  },
+  "homepage": "https://github.com/ryandemelo/token-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/ryandemelo/token-monitor/issues"
+  },
+  "keywords": [
+    "ai",
+    "tokens",
+    "claude-code",
+    "gemini-cli",
+    "codex",
+    "cursor",
+    "copilot",
+    "antigravity",
+    "cost",
+    "developer-productivity"
+  ],
   "type": "module",
   "bin": {
     "token-monitor": "dist/src/cli.js"
@@ -11,6 +31,9 @@
   "files": [
     "dist/src"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=24"
   },
