@@ -3,7 +3,7 @@
   "displayName": "Token Monitor",
   "description": "Status-bar token/cost for the current project plus the token-monitor dashboard, for VS Code, Cursor, Windsurf, and Antigravity.",
   "version": "0.7.0",
-  "publisher": "ryandemelo",
+  "publisher": "ryan653133",
   "license": "MIT",
   "repository": {
     "type": "git",

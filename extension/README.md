@@ -4,6 +4,8 @@ Status-bar token/cost for the current project plus the full [token-monitor](http
 
 The extension is a thin UI over the CLI — all parsing, storage, and privacy guarantees are the CLI's. Data never leaves your machine.
 
+**Install:** [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ryan653133.token-monitor) (search "token-monitor"), or the `.vsix` from the [latest release](https://github.com/ryandemelo/token-monitor/releases). Requires Node ≥ 24 on PATH.
+
 ## What you get
 
 - **Status bar**: `1.2M · ~$45` — work tokens and estimated cost for the workspace's project over the configured window (falls back to overall when the project has no data). Hover for cache hit and rework ratios; click to open the dashboard.

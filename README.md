@@ -85,7 +85,7 @@ Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads o
 
 ## IDE extension
 
-[`extension/`](extension/) ships a VS Code-family extension (works in VS Code, Cursor, Windsurf, Antigravity): status-bar tokens/cost for the current project and the dashboard in a webview, both powered by the CLI. Grab the `.vsix` from the latest release (or CI artifacts) and install via *Extensions: Install from VSIX…*
+[`extension/`](extension/) ships a VS Code-family extension (works in VS Code, Cursor, Windsurf, Antigravity): status-bar tokens/cost for the current project and the dashboard in a webview, both powered by the CLI. Install **[Token Monitor](https://marketplace.visualstudio.com/items?itemName=ryan653133.token-monitor)** from the VS Code Marketplace (search "token-monitor"), or grab the `.vsix` from the latest release and use *Extensions: Install from VSIX…*
 
 ## Team usage
 
