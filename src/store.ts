@@ -82,6 +82,95 @@ export interface StoredEvent {
   activity: string;
 }
 
+/**
+ * One session's derived intent — labels only, NEVER raw prompt text. The
+ * fingerprint is the ≤8 redacted keyword tokens from intent.ts; `label` is a
+ * short top-terms name; `intent_id` is a stable per-session signature hash.
+ * There is deliberately no free-text column, so the worst a leak could expose
+ * is a handful of redacted keywords.
+ */
+export interface IntentRow {
+  session_id: string;
+  source: string;
+  project: string;
+  intent_id: string;
+  label: string;
+  /** JSON-encoded string[] of ≤8 redacted keyword tokens. */
+  fingerprint: string;
+  has_text: number;
+  first_seen: string;
+}
+
+export function ensureIntentsTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_intents (
+      session_id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      project TEXT NOT NULL,
+      intent_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      has_text INTEGER NOT NULL,
+      first_seen TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Record per-session intents first-wins (INSERT OR IGNORE on session_id), so a
+ * session's first categorization is frozen and re-runs stay idempotent —
+ * mirrors the follow-through baseline pattern. Returns rows inserted.
+ */
+export function recordIntents(
+  db: DatabaseSync,
+  rows: Array<{
+    sessionId: string;
+    source: string;
+    project: string;
+    intentId: string;
+    label: string;
+    fingerprint: string[];
+    hasText: boolean;
+    firstSeen: string;
+  }>,
+): number {
+  ensureIntentsTable(db);
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO session_intents
+      (session_id, source, project, intent_id, label, fingerprint, has_text, first_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let inserted = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      const res = stmt.run(
+        r.sessionId, r.source, r.project, r.intentId, r.label,
+        JSON.stringify(r.fingerprint), r.hasText ? 1 : 0, r.firstSeen,
+      );
+      inserted += Number(res.changes);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return inserted;
+}
+
+/** Frozen intents for the given session ids (first-wins values). */
+export function loadIntents(db: DatabaseSync, sessionIds: string[]): Map<string, IntentRow> {
+  ensureIntentsTable(db);
+  const out = new Map<string, IntentRow>();
+  if (sessionIds.length === 0) return out;
+  const stmt = db.prepare(`SELECT * FROM session_intents WHERE session_id = ?`);
+  for (const id of sessionIds) {
+    const row = stmt.get(id) as IntentRow | undefined;
+    if (row) out.set(row.session_id, row);
+  }
+  return out;
+}
+
 export function loadEvents(
   db: DatabaseSync,
   opts: { days?: number; project?: string; source?: string } = {},

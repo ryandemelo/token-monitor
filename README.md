@@ -205,11 +205,31 @@ premium-model-overuse  premiumShare   99%       97%   2026-06-12  — tracking
 
 Resolved findings re-open automatically if the metric regresses.
 
+## Task categories
+
+`token-monitor categorize` answers a different question from the cost report: *what* is the team using the agent for, and where is that work being repeated?
+
+It clusters sessions by task intent and surfaces duplicate work across projects plus candidates worth codifying as a shared skill or prompt:
+
+```
+By category
+  Category                  Sessions  Projects  Tokens  Cost
+  ⚠ api authentication jwt  6         3         210k    ~$84.00
+  css layout responsive     4         2          88k    ~$31.00
+
+Duplicate work (same task across ≥2 projects)
+  ⚠ api authentication jwt — 6 sessions across 3 projects (billing, gateway, mobile-api)  ~$84.00
+  Recurring across projects → codify it as a shared skill/prompt instead of re-deriving it.
+```
+
+It runs **fully offline and deterministic** — no agent, no network. Each session's prompt is reduced **on-device** to a handful of redacted keyword tokens (structured secrets — keys, URLs, paths, IPs, connection strings — are stripped first); raw prompt text is never stored, printed, or sent. `--threshold` (0–1, default 0.4) and `--min-cluster` (default 2) tune the clustering; bias toward false negatives, since a wrong "duplicate work" call costs more trust than a missed one.
+
 ## CLI
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
 token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]
@@ -231,6 +251,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] VS Code-family extension: status-bar cost + dashboard webview
 - [x] Org-level cross-check via provider usage APIs: `reconcile`
 - [x] npm publish: `npx @ryandemelo/token-monitor`
+- [x] Task categorization: cluster sessions by intent, flag cross-project duplicate work, suggest org skills (`categorize`, on-device)
 
 ## Integrity & threat model
 
@@ -262,9 +283,11 @@ Per model it shows local tokens, org-billed tokens, and a coverage %. The local 
 
 ## Privacy
 
-Everything stays on your machine. token-monitor reads log files locally, stores aggregate numbers in a local SQLite file, and never makes a network request. Prompt and code content is never stored — only token counts, tool names, timestamps, and project/branch names.
+Everything stays on your machine. token-monitor reads log files locally, stores aggregate numbers in a local SQLite file, and never makes a network request. The core report stores only token counts, tool names, timestamps, and project/branch names — never prompt or code content.
 
-The one opt-in exception: `analyze --llm` sends those aggregates to your own agent CLI's provider for analysis. Everything else is fully offline.
+`categorize` is the one command that looks at prompt text, and it does so **entirely on-device**: each session is reduced to at most 8 redacted keyword tokens before anything is written. Structured secrets of known shape (emails, API keys, URLs, file paths, IPs, UUIDs, connection strings, PEM blocks, `key=value` secrets) are stripped first, and key/hash-shaped survivors are dropped — so the database stores keyword *labels*, never sentences. This is defence-in-depth, not a guarantee: a secret that looks exactly like an ordinary word can still survive, which is why only labels (never raw prose) are ever kept.
+
+The one network exception is opt-in: `analyze --llm` sends aggregates to your own agent CLI's provider for analysis. Everything else — `categorize` included — is fully offline.
 
 ## License
 
