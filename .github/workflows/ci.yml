@@ -59,6 +59,10 @@ jobs:
       - run: npm run build
       - run: npm ci
         working-directory: extension
+      # vsce publish has no prepublish hook here, so compile the entrypoint
+      # (dist/src/extension.js) before packaging — otherwise publish aborts.
+      - run: npm run compile
+        working-directory: extension
       - run: npx @vscode/vsce publish -p "$VSCE_PAT"
         working-directory: extension
         env:
