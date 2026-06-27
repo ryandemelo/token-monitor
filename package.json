@@ -1,6 +1,6 @@
 {
   "name": "@ryandemelo/token-monitor",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Measure how effectively your team spends AI coding-agent tokens (Claude Code, Gemini CLI, Codex, Cursor, Antigravity, Copilot Chat) — activity breakdowns, usage personas, and recommendations.",
   "license": "MIT",
   "author": "Ryan de Melo",
