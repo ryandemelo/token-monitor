@@ -29,12 +29,12 @@ makeCursorFixture(cursorUserDir(HOME));
 makeAntigravityFixture(join(HOME, '.gemini', 'antigravity-cli'));
 cpSync(join(FIXTURES, 'copilot'), codeUserDir(HOME), { recursive: true });
 
-function run(args: string[], opts: { home?: string } = {}) {
+function run(args: string[], opts: { home?: string; env?: NodeJS.ProcessEnv } = {}) {
   const home = opts.home ?? HOME;
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
     // APPDATA keeps win32 path resolution inside the synthetic home too.
-    env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming') },
+    env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming'), ...opts.env },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status };
 }
@@ -181,6 +181,61 @@ test('e2e: analyze renders the deep dive', () => {
   assert.equal(code, 0);
   assert.ok(stdout.includes('Deep analysis'));
   assert.ok(stdout.includes('Most expensive sessions'));
+});
+
+test('e2e: analyze --llm --track records LLM advice into follow-through', () => {
+  // A fake agent CLI: reads the prompt on stdin, returns strict JSON (wrapped in
+  // prose + a fence, to exercise the tolerant parser).
+  const fake = join(HOME, 'fake-llm.mjs');
+  writeFileSync(fake, [
+    "let s='';",
+    "process.stdin.on('data', (d) => (s += d));",
+    "process.stdin.on('end', () => {",
+    "  const body = JSON.stringify({ interventions: [",
+    "    { metric: 'cacheHitRatio', direction: 'up', title: 'Reuse the system prompt across turns', rationale: 'cache hit is low' },",
+    "    { metric: 'reworkRatio', direction: 'down', title: 'Plan before coding', rationale: 'rework is high' },",
+    "  ] });",
+    "  process.stdout.write('Here are my picks:\\n```json\\n' + body + '\\n```\\n');",
+    "});",
+  ].join('\n'));
+  const env = { TOKEN_MONITOR_LLM_CMD: `${process.execPath} ${fake}` };
+
+  const tracked = run(['analyze', '--llm', '--track', ...DAYS], { env });
+  assert.equal(tracked.code, 0, tracked.stderr);
+  assert.ok(tracked.stdout.includes('now tracked through follow-through'));
+  assert.ok(tracked.stdout.includes('cacheHitRatio'));
+
+  // The advice now appears in the report's follow-through, marked LLM-origin.
+  const rep = run(['report', ...DAYS]);
+  assert.ok(rep.stdout.includes('llm:cacheHitRatio'), 'report must track the LLM finding');
+  assert.ok(rep.stdout.includes('🤖'), 'LLM-origin rows are marked');
+
+  // --track refuses a filtered window (would pollute baselines).
+  const filtered = run(['analyze', '--track', '--project', 'proj-alpha', ...DAYS], { env });
+  assert.equal(filtered.code, 1);
+  assert.match(filtered.stderr, /unfiltered window/);
+});
+
+test('e2e: --track records nothing when the agent fails or returns no JSON', () => {
+  // (1) valid JSON but a nonzero exit -> not recorded, CLI propagates failure.
+  const failJson = join(HOME, 'fail-json.mjs');
+  writeFileSync(
+    failJson,
+    "process.stdout.write(JSON.stringify({interventions:[{metric:'retryShare',title:'x',rationale:'y'}]}));process.exit(3);",
+  );
+  const r1 = run(['analyze', '--track', ...DAYS], { env: { TOKEN_MONITOR_LLM_CMD: `${process.execPath} ${failJson}` } });
+  assert.notEqual(r1.code, 0);
+  assert.match(r1.stderr, /exited with status/);
+
+  // (2) clean exit but no parseable JSON -> nonzero, nothing recorded.
+  const noJson = join(HOME, 'no-json.mjs');
+  writeFileSync(noJson, "process.stdout.write('I have no structured advice for you.');");
+  const r2 = run(['analyze', '--track', ...DAYS], { env: { TOKEN_MONITOR_LLM_CMD: `${process.execPath} ${noJson}` } });
+  assert.notEqual(r2.code, 0);
+  assert.match(r2.stderr, /No trackable interventions/);
+
+  // Neither attempt persisted a retryShare row.
+  assert.ok(!run(['report', ...DAYS]).stdout.includes('llm:retryShare'));
 });
 
 test('e2e: init from local config + push delivers a verifiable export', () => {

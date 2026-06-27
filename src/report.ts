@@ -149,7 +149,7 @@ export function renderReport(
         opts.follow.map((f) => {
           const realized = realizedMonthly(f, m, rates, opts.days);
           return [
-            f.key,
+            (f.origin === 'llm' ? '🤖 ' : '') + f.key,
             f.metric,
             fmtMetric(f.metric, f.baseline),
             fmtMetric(f.metric, f.current),

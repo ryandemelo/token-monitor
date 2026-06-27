@@ -37,6 +37,22 @@ export function metricValue(m: Metrics, key: MetricKey): number {
   return m[key];
 }
 
+/**
+ * The improvement direction for each tracked metric. LLM-suggested
+ * interventions (#42) are scored against this, not against whatever direction
+ * the model claims — the canonical direction is the source of truth.
+ */
+export const METRIC_DIRECTION: Record<MetricKey, 'up' | 'down'> = {
+  cacheHitRatio: 'up',
+  reworkRatio: 'down',
+  thinkToCodeRatio: 'up',
+  premiumShare: 'down',
+  contextBloatShare: 'down',
+  coldRestartShare: 'down',
+  premiumWasteShare: 'down',
+  retryShare: 'down',
+};
+
 export function structuredFindings(m: Metrics): Finding[] {
   const out: Finding[] = [];
   if (m.cacheHitRatio < 0.5 && m.spendTokens > 100_000) {
@@ -115,6 +131,15 @@ export interface FollowRow {
   current: number;
   createdAt: string;
   status: 'new' | 'tracking' | 'improving' | 'regressing' | 'resolved';
+  /** 'rule' = built-in finding; 'llm' = advice from `analyze --llm --track`. */
+  origin: 'rule' | 'llm';
+}
+
+/** One intervention parsed from a strict-JSON `analyze --llm --track` response. */
+export interface LlmIntervention {
+  metric: MetricKey;
+  title: string;
+  rationale: string;
 }
 
 export function ensureFollowTable(db: DatabaseSync): void {
@@ -128,9 +153,15 @@ export function ensureFollowTable(db: DatabaseSync): void {
       created_at TEXT NOT NULL,
       last_value REAL,
       last_checked TEXT,
-      resolved_at TEXT
+      resolved_at TEXT,
+      origin TEXT NOT NULL DEFAULT 'rule'
     );
   `);
+  // Migrate dbs created before LLM-tracked findings carried an origin.
+  const cols = db.prepare(`PRAGMA table_info(recommendations)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'origin')) {
+    db.exec(`ALTER TABLE recommendations ADD COLUMN origin TEXT NOT NULL DEFAULT 'rule'`);
+  }
 }
 
 const MOVE_THRESHOLD = 0.02;
@@ -159,7 +190,7 @@ export function syncFindings(
 
   const rows = db.prepare('SELECT * FROM recommendations').all() as Array<{
     key: string; metric: MetricKey; direction: 'up' | 'down'; baseline: number;
-    created_at: string; resolved_at: string | null;
+    created_at: string; resolved_at: string | null; origin: 'rule' | 'llm';
   }>;
 
   const update = db.prepare(
@@ -168,7 +199,9 @@ export function syncFindings(
   const out: FollowRow[] = [];
   for (const r of rows) {
     const current = metricValue(m, r.metric);
-    const stillActive = active.has(r.key);
+    // Rule findings resolve when they stop firing; LLM-tracked advice has no
+    // firing condition, so it keeps tracking until its metric is re-measured.
+    const stillActive = r.origin === 'llm' ? true : active.has(r.key);
     // Resolve when the finding no longer fires; re-open if it fires again.
     const resolvedAt = stillActive ? null : (r.resolved_at ?? now);
     update.run(current, now, resolvedAt, r.key);
@@ -184,9 +217,37 @@ export function syncFindings(
     out.push({
       key: r.key, metric: r.metric, direction: r.direction,
       baseline: r.baseline, current, createdAt: r.created_at, status,
+      origin: r.origin ?? 'rule',
     });
   }
   return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Persist LLM-suggested interventions as tracked findings, keyed by the metric
+ * they target (`llm:<metric>`) so re-running `--track` keeps the original
+ * baseline and follow-through can measure whether the advice moved the number.
+ * At most one tracked intervention per metric — the first advice for it wins
+ * (INSERT OR IGNORE). Returns the LLM rows for THIS call's metrics, re-measured
+ * against `m` (not every llm row ever stored), so callers summarise one run.
+ */
+export function recordLlmFindings(
+  db: DatabaseSync,
+  interventions: LlmIntervention[],
+  m: Metrics,
+  now: string = new Date().toISOString(),
+): FollowRow[] {
+  ensureFollowTable(db);
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO recommendations (key, metric, direction, message, baseline, created_at, origin)
+    VALUES (?, ?, ?, ?, ?, ?, 'llm')
+  `);
+  for (const it of interventions) {
+    const message = it.rationale ? `${it.title} — ${it.rationale}` : it.title;
+    insert.run(`llm:${it.metric}`, it.metric, METRIC_DIRECTION[it.metric], message, metricValue(m, it.metric), now);
+  }
+  const metrics = new Set(interventions.map((it) => it.metric));
+  return syncFindings(db, m, now).filter((r) => r.origin === 'llm' && metrics.has(r.metric));
 }
 
 export function fmtMetric(key: MetricKey, v: number): string {

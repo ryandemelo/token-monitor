@@ -126,7 +126,7 @@ export function renderHtml(
       ? `<h2>Follow-through</h2><table><tr><th>Recommendation</th><th>Metric</th><th>Baseline</th><th>Now</th><th>Realized</th><th>Since</th><th>Status</th></tr>${opts.follow
           .map((f) => {
             const realized = realizedMonthly(f, m, rates, opts.days);
-            return `<tr><td>${esc(f.key)}</td><td>${f.metric}</td><td class="num">${fmtMetric(f.metric, f.baseline)}</td><td class="num">${fmtMetric(f.metric, f.current)}</td><td class="num">${realized ? `<span class="save">+${fmtUsdShort(realized)}/mo</span>` : '<span class="muted">—</span>'}</td><td>${f.createdAt.slice(0, 10)}</td><td class="st-${f.status}">${f.status}</td></tr>`;
+            return `<tr><td>${f.origin === 'llm' ? '🤖 ' : ''}${esc(f.key)}</td><td>${f.metric}</td><td class="num">${fmtMetric(f.metric, f.baseline)}</td><td class="num">${fmtMetric(f.metric, f.current)}</td><td class="num">${realized ? `<span class="save">+${fmtUsdShort(realized)}/mo</span>` : '<span class="muted">—</span>'}</td><td>${f.createdAt.slice(0, 10)}</td><td class="st-${f.status}">${f.status}</td></tr>`;
           })
           .join('')}</table>`
       : '';

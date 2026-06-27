@@ -169,7 +169,7 @@ test('realizedMonthly prices the baseline->current move; flat rows stay blank', 
   const rates = blendedRates(m);
   const row = (current: number): FollowRow => ({
     key: 'low-cache-hit', metric: 'cacheHitRatio', direction: 'up',
-    baseline: 0.4, current, createdAt: '2026-06-01', status: 'improving',
+    baseline: 0.4, current, createdAt: '2026-06-01', status: 'improving', origin: 'rule',
   });
   const realized = realizedMonthly(row(0.6), m, rates, 30)!;
   // 0.2 move × inputSide × (input − cacheRead)

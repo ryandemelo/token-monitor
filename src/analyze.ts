@@ -3,7 +3,8 @@ import type { StoredEvent } from './store.js';
 import { computeMetrics, groupBy, contextGrowthOf, parseTools, CACHE_TTL_MS } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
-import { structuredFindings } from './followthrough.js';
+import { structuredFindings, fmtMetric } from './followthrough.js';
+import type { MetricKey, LlmIntervention, FollowRow } from './followthrough.js';
 import type { Activity } from './types.js';
 import { ACTIVITIES } from './types.js';
 import { table, section, fmtTokens, renderEnrichedRecs } from './report.js';
@@ -226,10 +227,22 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
   };
 }
 
+/** Metrics follow-through can re-measure — a tracked LLM intervention must target one. */
+// premiumShare is intentionally excluded: premiumWasteShare already covers
+// premium overspend and is the one carried in the payload + definitions, so the
+// model only ever targets a number it can actually see and cite.
+export const TRACKABLE_METRICS: MetricKey[] = [
+  'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio',
+  'contextBloatShare', 'coldRestartShare', 'premiumWasteShare', 'retryShare',
+];
+
+const METRIC_DEFINITIONS =
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.
 
-Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.
+${METRIC_DEFINITIONS}
 
 Analyze the data and respond in markdown:
 1. **Top 3 interventions**, prioritized by expected token/cost savings. For each: the evidence (cite specific numbers/projects/sessions from the data), the concrete workflow change, and which metric will move if it works.
@@ -240,6 +253,145 @@ Be specific to this data. No generic advice that ignores the numbers. If the dat
 
 DATA:
 ${JSON.stringify(buildLlmPayload(events, days))}`;
+}
+
+/**
+ * The --track variant: same aggregates, but the model must answer in STRICT
+ * JSON whose every intervention targets a TRACKABLE_METRICS key, so each piece
+ * of advice can be parsed into a finding and measured by follow-through.
+ */
+export function buildLlmTrackPrompt(events: StoredEvent[], days: number): string {
+  return `You are an engineering-efficiency analyst. The JSON below is AGGREGATE token-usage telemetry from AI coding agents over ${days} days — counts, ratios, tool names, and project names only; no prompt or code content.
+
+${METRIC_DEFINITIONS}
+
+Propose the highest-impact interventions for this data. Respond with STRICT JSON ONLY — no prose, no markdown, no code fence. Exact shape:
+{"interventions":[{"metric":"<key>","title":"<short imperative change>","rationale":"<one sentence citing specific numbers from the data>"}]}
+
+Rules:
+- "metric" MUST be exactly one of: ${TRACKABLE_METRICS.join(', ')}. It is the number that will be tracked to see whether your advice worked.
+- At most one intervention per metric. Omit any metric the data does not justify. Return 1-5 interventions.
+- Output nothing but the JSON object.
+
+DATA:
+${JSON.stringify(buildLlmPayload(events, days))}`;
+}
+
+/**
+ * Every parseable JSON value in the text, best-first: a direct parse, then a
+ * ```json fence, then each balanced { } / [ ] region left to right (strings and
+ * escapes respected). A stray brace in prose before the real JSON therefore
+ * can't hide it — later regions are still considered.
+ */
+function jsonCandidates(text: string): unknown[] {
+  const out: unknown[] = [];
+  const push = (s: string) => {
+    try { out.push(JSON.parse(s)); } catch { /* not JSON, skip */ }
+  };
+  push(text.trim());
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) push(fence[1].trim());
+  for (let i = 0; i < text.length; ) {
+    const rel = text.slice(i).search(/[[{]/);
+    if (rel < 0) break;
+    const open = i + rel;
+    const openCh = text[open];
+    const closeCh = openCh === '{' ? '}' : ']';
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = open; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === openCh) depth++;
+      else if (c === closeCh && --depth === 0) { end = j; break; }
+    }
+    if (end < 0) break; // unbalanced from here on
+    push(text.slice(open, end + 1));
+    i = end + 1; // continue after this region, not inside it
+  }
+  return out;
+}
+
+/** First parseable JSON value (prose/fence-tolerant); undefined when none. */
+export function extractJson(text: string): unknown {
+  return jsonCandidates(text)[0];
+}
+
+export interface ParsedFindings {
+  interventions: LlmIntervention[];
+  /** Items the model returned that were dropped (untrackable metric, no title, or a duplicate metric). */
+  dropped: number;
+}
+
+/**
+ * Validate an LLM response into trackable interventions: each must name a
+ * known metric and a title; the first per metric wins (follow-through measures
+ * one number per metric). Malformed or extra items are dropped, not thrown.
+ * Of all JSON values in the response, the first that yields ≥1 intervention is
+ * used — so a stray `[0]` or `{note}` in prose can't shadow the real payload.
+ */
+export function parseLlmFindings(text: string): ParsedFindings {
+  const trackable = new Set<string>(TRACKABLE_METRICS);
+  const toArray = (data: unknown): unknown[] =>
+    Array.isArray(data)
+      ? data
+      : Array.isArray((data as { interventions?: unknown })?.interventions)
+        ? (data as { interventions: unknown[] }).interventions
+        : [];
+  const validate = (arr: unknown[]): ParsedFindings => {
+    const seen = new Set<string>();
+    const interventions: LlmIntervention[] = [];
+    let dropped = 0;
+    for (const raw of arr) {
+      const it = raw as { metric?: unknown; title?: unknown; rationale?: unknown };
+      const metric = String(it?.metric ?? '');
+      const title = String(it?.title ?? '').trim().slice(0, 120);
+      if (!trackable.has(metric) || !title || seen.has(metric)) {
+        dropped++;
+        continue;
+      }
+      seen.add(metric);
+      interventions.push({
+        metric: metric as MetricKey,
+        title,
+        rationale: String(it?.rationale ?? '').trim().slice(0, 400),
+      });
+    }
+    return { interventions, dropped };
+  };
+  let fallback: ParsedFindings = { interventions: [], dropped: 0 };
+  for (const candidate of jsonCandidates(text)) {
+    const arr = toArray(candidate);
+    if (arr.length === 0) continue;
+    const result = validate(arr);
+    if (result.interventions.length > 0) return result;
+    fallback = result; // parsed but everything dropped — keep for the count
+  }
+  return fallback;
+}
+
+/** Terminal summary of the interventions just recorded for tracking. */
+export function renderTrackedLlm(rows: FollowRow[], parsed: ParsedFindings): string {
+  const out: string[] = [];
+  out.push(section('LLM recommendations — now tracked through follow-through'));
+  const titleByMetric = new Map(parsed.interventions.map((it) => [it.metric, it.title]));
+  out.push(
+    table(
+      ['Metric', 'Baseline', 'Status', 'Advice'],
+      rows.map((r) => {
+        const advice = titleByMetric.get(r.metric) ?? '';
+        return [r.metric, fmtMetric(r.metric, r.baseline), r.status, advice.length > 60 ? advice.slice(0, 59) + '…' : advice];
+      }),
+    ),
+  );
+  out.push(
+    `\n  ${rows.length} intervention(s) recorded${parsed.dropped ? `, ${parsed.dropped} dropped (untrackable metric)` : ''}. ` +
+      'Re-run `token-monitor report` over time to see whether the metric moved.',
+  );
+  return out.join('\n');
 }
 
 export function renderAnalysis(events: StoredEvent[], days: number): string {
@@ -343,7 +495,12 @@ export const LLM_AGENTS: Record<string, (prompt: string) => { cmd: string; args:
   codex: (p) => ({ cmd: 'codex', args: ['exec', p] }),
 };
 
+/** Env hook: a shell command that stands in for the agent CLI (prompt on stdin,
+ *  response on stdout). Lets `--track` be exercised without a real agent installed. */
+const LLM_CMD_OVERRIDE = 'TOKEN_MONITOR_LLM_CMD';
+
 export function detectAgent(): string | undefined {
+  if (process.env[LLM_CMD_OVERRIDE]) return 'override';
   for (const name of Object.keys(LLM_AGENTS)) {
     const r = spawnSync('which', [name], { stdio: 'ignore' });
     if (r.status === 0) return name;
@@ -361,4 +518,23 @@ export function runLlm(prompt: string, agent: string): number {
   console.error(`Sending aggregate metrics (no prompts/code) to ${cmd} for analysis...\n`);
   const r = spawnSync(cmd, args, { stdio: ['ignore', 'inherit', 'inherit'] });
   return r.status ?? 1;
+}
+
+/** Like runLlm, but captures the agent's stdout so `--track` can parse its JSON. */
+export function runLlmCapture(prompt: string, agent: string): { status: number; stdout: string } {
+  const opts = { encoding: 'utf8' as const, maxBuffer: 16 * 1024 * 1024 };
+  const override = process.env[LLM_CMD_OVERRIDE];
+  console.error(`Sending aggregate metrics (no prompts/code) to ${override ?? agent} for analysis...\n`);
+  if (override) {
+    const r = spawnSync(override, [], { ...opts, input: prompt, shell: true });
+    return { status: r.status ?? 1, stdout: r.stdout ?? '' };
+  }
+  const spec = LLM_AGENTS[agent];
+  if (!spec) {
+    console.error(`Unknown agent "${agent}". Supported: ${Object.keys(LLM_AGENTS).join(', ')}`);
+    return { status: 1, stdout: '' };
+  }
+  const { cmd, args } = spec(prompt);
+  const r = spawnSync(cmd, args, opts);
+  return { status: r.status ?? 1, stdout: r.stdout ?? '' };
 }
