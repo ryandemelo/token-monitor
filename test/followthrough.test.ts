@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/store.js';
 import { computeMetrics } from '../src/metrics.js';
-import { syncFindings, structuredFindings, premiumShare } from '../src/followthrough.js';
+import { syncFindings, structuredFindings, premiumShare, recordLlmFindings } from '../src/followthrough.js';
 import { makeStored } from './helpers.js';
 
 // Big spend, no cache reads -> 'low-cache-hit' fires.
@@ -123,4 +123,57 @@ test('premiumShare measures premium-model token share', () => {
     makeStored({ model: 'claude-haiku-4-5', input_tokens: 100, output_tokens: 0 }),
   ]);
   assert.ok(Math.abs(premiumShare(m) - 0.9) < 1e-9);
+});
+
+test('recordLlmFindings stores advice keyed by metric, baselined to current, canonical direction', () => {
+  const db = openDb(':memory:');
+  const rows = recordLlmFindings(db, [
+    { metric: 'cacheHitRatio', title: 'Reuse the system prompt', rationale: 'cache 0%' },
+    { metric: 'reworkRatio', title: 'Plan before coding', rationale: '' },
+  ], badCache(), '2026-06-01T00:00:00.000Z');
+  const cache = rows.find((r) => r.key === 'llm:cacheHitRatio')!;
+  assert.ok(cache);
+  assert.equal(cache.origin, 'llm');
+  assert.equal(cache.direction, 'up'); // canonical, not whatever the model said
+  assert.equal(cache.baseline, 0); // current metric value at record time
+  assert.equal(cache.status, 'new');
+  assert.ok(rows.some((r) => r.key === 'llm:reworkRatio'));
+});
+
+test('recordLlmFindings keeps the original baseline across reruns; one row per metric', () => {
+  const db = openDb(':memory:');
+  recordLlmFindings(db, [{ metric: 'cacheHitRatio', title: 'first', rationale: '' }], badCache(), '2026-06-01T00:00:00.000Z');
+  const rows = recordLlmFindings(db, [
+    { metric: 'cacheHitRatio', title: 'reworded later', rationale: 'x' },
+  ], goodCache(), '2026-06-08T00:00:00.000Z');
+  const cache = rows.filter((r) => r.key === 'llm:cacheHitRatio');
+  assert.equal(cache.length, 1); // INSERT OR IGNORE: no duplicate metric row
+  assert.equal(cache[0].baseline, 0); // baseline from the FIRST recording
+  assert.ok(cache[0].current > 0.9); // re-measured against the new window
+  assert.equal(cache[0].status, 'improving'); // the advice moved the metric up
+});
+
+test('LLM-tracked findings never auto-resolve when a rule finding clears', () => {
+  const db = openDb(':memory:');
+  recordLlmFindings(db, [{ metric: 'cacheHitRatio', title: 'x', rationale: '' }], badCache(), '2026-06-01T00:00:00.000Z');
+  // A later unfiltered report on good cache: the rule low-cache-hit resolves,
+  // but the LLM row has no firing condition so it keeps tracking.
+  const rows = syncFindings(db, goodCache(), '2026-06-08T00:00:00.000Z');
+  assert.equal(rows.find((r) => r.key === 'low-cache-hit')?.status, 'resolved');
+  const llm = rows.find((r) => r.key === 'llm:cacheHitRatio')!;
+  assert.notEqual(llm.status, 'resolved');
+  assert.equal(llm.origin, 'llm');
+});
+
+test('ensureFollowTable migrates a pre-origin recommendations table', () => {
+  const db = openDb(':memory:');
+  // An older db: recommendations table without the origin column.
+  db.exec(`CREATE TABLE recommendations (
+    key TEXT PRIMARY KEY, metric TEXT NOT NULL, direction TEXT NOT NULL, message TEXT NOT NULL,
+    baseline REAL NOT NULL, created_at TEXT NOT NULL, last_value REAL, last_checked TEXT, resolved_at TEXT
+  )`);
+  db.prepare(`INSERT INTO recommendations (key, metric, direction, message, baseline, created_at)
+    VALUES ('low-cache-hit', 'cacheHitRatio', 'up', 'm', 0, '2026-06-01')`).run();
+  const rows = syncFindings(db, badCache(), '2026-06-02T00:00:00.000Z');
+  assert.equal(rows.find((r) => r.key === 'low-cache-hit')?.origin, 'rule'); // defaulted on migration
 });

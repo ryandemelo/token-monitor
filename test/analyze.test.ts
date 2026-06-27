@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeSessionStats, computeToolStats, deepAnalysis, buildLlmPayload, buildLlmPrompt } from '../src/analyze.js';
+import { computeSessionStats, computeToolStats, deepAnalysis, buildLlmPayload, buildLlmPrompt, buildLlmTrackPrompt, parseLlmFindings, extractJson } from '../src/analyze.js';
 import { makeStored } from './helpers.js';
 
 const fixLoopSession = [
@@ -93,4 +93,47 @@ test('llm prompt embeds definitions, asks for prioritized interventions, stays c
   assert.ok(prompt.includes('reworkRatio = '));
   assert.ok(prompt.includes('DATA:'));
   assert.ok(prompt.length < 20_000, `prompt too large: ${prompt.length}`);
+});
+
+test('track prompt demands strict JSON targeting a trackable metric', () => {
+  const prompt = buildLlmTrackPrompt(fixLoopSession, 30);
+  assert.ok(prompt.includes('STRICT JSON'));
+  assert.ok(prompt.includes('"interventions"'));
+  assert.ok(prompt.includes('cacheHitRatio')); // lists the trackable metrics
+  assert.ok(prompt.includes('reworkRatio = ')); // shares the metric definitions
+  assert.ok(prompt.includes('DATA:'));
+});
+
+test('extractJson finds the first balanced object inside surrounding noise', () => {
+  assert.deepEqual(extractJson('blah {"a":1,"b":{"c":2}} trailing'), { a: 1, b: { c: 2 } });
+  assert.deepEqual(extractJson('"a string with } brace"'), 'a string with } brace');
+  assert.equal(extractJson('no json here'), undefined);
+});
+
+test('parseLlmFindings: strict object form', () => {
+  const { interventions, dropped } = parseLlmFindings(
+    '{"interventions":[{"metric":"cacheHitRatio","title":"Reuse prompt","rationale":"cache 12%"}]}',
+  );
+  assert.equal(interventions.length, 1);
+  assert.equal(interventions[0].metric, 'cacheHitRatio');
+  assert.equal(interventions[0].title, 'Reuse prompt');
+  assert.equal(dropped, 0);
+});
+
+test('parseLlmFindings: tolerates prose and a ```json fence around the JSON', () => {
+  const text =
+    'Sure, here are my picks:\n```json\n{"interventions":[{"metric":"reworkRatio","title":"Plan first","rationale":"rework 40%"}]}\n```\nHope that helps!';
+  assert.equal(parseLlmFindings(text).interventions[0].metric, 'reworkRatio');
+});
+
+test('parseLlmFindings: bare array, drops untrackable / duplicate / titleless items', () => {
+  const text =
+    '[{"metric":"cacheHitRatio","title":"a"},{"metric":"bogusMetric","title":"b"},{"metric":"cacheHitRatio","title":"dup"},{"metric":"retryShare","title":""}]';
+  const { interventions, dropped } = parseLlmFindings(text);
+  assert.deepEqual(interventions.map((i) => i.metric), ['cacheHitRatio']);
+  assert.equal(dropped, 3); // bogus metric, duplicate metric, empty title
+});
+
+test('parseLlmFindings: no JSON present yields an empty, non-throwing result', () => {
+  assert.deepEqual(parseLlmFindings('I could not analyze this.'), { interventions: [], dropped: 0 });
 });

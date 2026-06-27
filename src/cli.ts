@@ -7,12 +7,12 @@ import { renderReport, renderTeamReport, renderTrend } from './report.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
-import { syncFindings } from './followthrough.js';
+import { syncFindings, recordLlmFindings } from './followthrough.js';
 import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
 import { renderHtml, renderTeamHtml } from './html.js';
-import { renderAnalysis, deepAnalysis, buildLlmPrompt, runLlm, detectAgent } from './analyze.js';
+import { renderAnalysis, deepAnalysis, buildLlmPrompt, buildLlmTrackPrompt, runLlm, runLlmCapture, parseLlmFindings, renderTrackedLlm, detectAgent } from './analyze.js';
 import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor, DEFAULT_KEY_DIR } from './sign.js';
 import { fetchTeamConfig, saveConfig, loadConfig, pushExport, installSchedule, removeSchedule } from './deploy.js';
 import { realpathSync } from 'node:fs';
@@ -24,7 +24,7 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
   token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
-  token-monitor analyze [--days <n>] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
+  token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
                         [--verify] [--keys keys.json] [--json] [--html team.html]
@@ -39,7 +39,9 @@ Commands:
             Antigravity, Copilot Chat) into SQLite
   report    Activity breakdown, cost, personas, and recommendations
   analyze   Session-level deep dive; --llm asks your local agent CLI for
-            prioritized recommendations (sends aggregate metrics only)
+            prioritized recommendations (sends aggregate metrics only); add
+            --track to record those recommendations and measure (via
+            follow-through) whether they actually moved their metric
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team report
   init      Join a team: fetch the lead's config, set up keys, first collect,
@@ -118,6 +120,7 @@ async function main() {
       team: { type: 'string' },
       out: { type: 'string', default: 'report.html' },
       llm: { type: 'boolean', default: false },
+      track: { type: 'boolean', default: false },
       agent: { type: 'string' },
       verify: { type: 'boolean', default: false },
       keys: { type: 'string' },
@@ -285,6 +288,26 @@ Signing fingerprint (send to your team lead for keys.json):
       console.log(JSON.stringify(deepAnalysis(events), null, 2));
     } else {
       console.log(renderAnalysis(events, days));
+    }
+    if (values.track) {
+      if (values.project || values.source) {
+        console.error('--track needs an unfiltered window so follow-through baselines stay clean; drop --project/--source.');
+        process.exit(1);
+      }
+      const agent = values.agent ?? detectAgent();
+      if (!agent) {
+        console.error('No agent CLI found (looked for: claude, gemini, codex). Install one or pass --agent.');
+        process.exit(1);
+      }
+      const { status, stdout } = runLlmCapture(buildLlmTrackPrompt(events, days), agent);
+      const parsed = parseLlmFindings(stdout);
+      if (parsed.interventions.length === 0) {
+        console.error('No trackable interventions parsed from the agent response (expected strict JSON targeting a known metric).');
+        process.exit(status || 1);
+      }
+      const rows = recordLlmFindings(db, parsed.interventions, computeMetrics(events));
+      console.log(renderTrackedLlm(rows, parsed));
+      process.exit(0);
     }
     if (values.llm) {
       const agent = values.agent ?? detectAgent();
