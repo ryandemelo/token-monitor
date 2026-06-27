@@ -2,7 +2,7 @@
   "sessionId": "g1",
   "projectHash": "abc",
   "messages": [
-    { "id": "m0", "type": "user", "content": [{ "text": "do it" }], "timestamp": "2026-06-01T09:00:00.000Z" },
+    { "id": "m0", "type": "user", "content": [{ "text": "refactor the database connection pooling logic" }], "timestamp": "2026-06-01T09:00:00.000Z" },
     {
       "id": "m1",
       "type": "gemini",

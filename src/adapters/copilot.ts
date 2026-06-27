@@ -121,7 +121,7 @@ export function collectCopilot(userDir: string = codeUserDir()): { events: Usage
       if (!session) continue;
       const sessionId = session.sessionId ?? basename(file).replace(/\.jsonl?$/, '');
       (session.requests ?? []).forEach((req, i) => {
-        const userText = req.message?.text ?? '';
+        const userText = typeof req.message?.text === 'string' ? req.message.text : '';
         const { text: responseText, tools, commands } = walkResponse(req.response ?? []);
         if (!userText && !responseText) return;
         const ts = req.timestamp ?? session.lastMessageDate ?? session.creationDate;
@@ -142,6 +142,7 @@ export function collectCopilot(userDir: string = codeUserDir()): { events: Usage
           commands,
           hasThinking: false,
           isError: !!req.result?.errorDetails && !req.isCanceled,
+          intentText: userText || undefined,
         };
         ev.activity = classify(ev);
         events.push(ev);

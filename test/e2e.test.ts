@@ -68,6 +68,24 @@ test('e2e: report renders all sections from collected data', () => {
   }
 });
 
+test('e2e: categorize captures intent text from every adapter, not just claude-code', async () => {
+  // The shared HOME has all sources collected. categorize re-collects intent
+  // text in-memory across adapters, so cursor/copilot/gemini/codex sessions now
+  // yield real-text fingerprints (has_text=1) — the PR2 fan-out.
+  const cat = run(['categorize', ...DAYS]);
+  assert.equal(cat.code, 0, cat.stderr);
+
+  const { openDb, loadIntents } = await import('../src/store.js');
+  const dbPath = join(HOME, '.token-monitor', 'token-monitor.sqlite');
+  const sids = ['c1', 'g1', 'sess-c1', 'cop-s1']; // cursor, gemini, codex, copilot
+  const intents = loadIntents(openDb(dbPath), sids);
+  for (const sid of sids) {
+    assert.equal(intents.get(sid)?.has_text, 1, `expected a text-derived intent for ${sid}`);
+    const fp = JSON.parse(intents.get(sid)!.fingerprint) as string[];
+    assert.ok(fp.length >= 1 && fp.length <= 8, `fingerprint out of bounds for ${sid}`);
+  }
+});
+
 test('e2e: report --json emits a signed v1 export; fingerprint command matches it', () => {
   const exportJson = run(['report', '--json', ...DAYS]).stdout;
   const data = JSON.parse(exportJson);

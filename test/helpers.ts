@@ -53,7 +53,10 @@ export function makeCursorFixture(userDir: string): void {
       { bubbleId: 'b5' }, { bubbleId: 'b6' }, { bubbleId: 'b7' },
     ],
   }));
-  put.run('bubbleId:c1:b1', bubble({ type: 1, createdAt: '2026-06-01T10:00:00.000Z' }));
+  put.run('bubbleId:c1:b1', bubble({
+    type: 1, createdAt: '2026-06-01T10:00:00.000Z',
+    text: 'add retry with backoff to the http client',
+  }));
   put.run('bubbleId:c1:b2', bubble({
     type: 2, toolFormerData: { name: 'read_file', status: 'completed', rawArgs: '{}' },
   }));
@@ -65,7 +68,10 @@ export function makeCursorFixture(userDir: string): void {
     tokenCount: { inputTokens: 1200, outputTokens: 300 },
     modelInfo: { modelName: 'default' },
   }));
-  put.run('bubbleId:c1:b5', bubble({ type: 1, createdAt: '2026-06-01T10:02:00.000Z' }));
+  put.run('bubbleId:c1:b5', bubble({
+    type: 1, createdAt: '2026-06-01T10:02:00.000Z',
+    text: 'fix the failing authentication unit test',
+  }));
   put.run('bubbleId:c1:b6', bubble({
     type: 2, toolFormerData: { name: 'edit_file', status: 'error', rawArgs: '{}' },
   }));

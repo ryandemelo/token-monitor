@@ -20,7 +20,8 @@ import { loadEvents, recordIntents, loadIntents } from './store.js';
 import type { StoredEvent } from './store.js';
 import { groupBy, parseTools } from './metrics.js';
 import { costOf } from './pricing.js';
-import { collectClaudeCode } from './adapters/claude-code.js';
+import { ADAPTERS } from './adapters/index.js';
+import type { Source } from './types.js';
 import { deriveSessionIntent, fnv1a } from './intent.js';
 import { clusterLabels } from './cluster.js';
 import type { ClusterItem } from './cluster.js';
@@ -84,17 +85,34 @@ function aggregateSession(sessionId: string, evs: StoredEvent[]): SessionAgg {
   };
 }
 
-/** Per-session user-intent text, re-collected in-memory (claude-code, PR1). */
-function intentTextBySession(): Map<string, string> {
+/**
+ * Per-session user-intent text, re-collected in-memory across every adapter that
+ * exposes it (claude-code, cursor, copilot, gemini-cli, codex). The text is
+ * carried only long enough to derive an on-device fingerprint — it is never
+ * persisted. A `source` filter narrows the re-collection to one adapter so a
+ * filtered `categorize` run doesn't pay to re-scan the others.
+ */
+function intentTextBySession(source?: string): Map<string, string> {
   const out = new Map<string, string>();
   const seen = new Map<string, Set<string>>();
-  for (const ev of collectClaudeCode().events) {
-    if (!ev.intentText) continue;
-    let s = seen.get(ev.sessionId);
-    if (!s) seen.set(ev.sessionId, (s = new Set()));
-    if (s.has(ev.intentText)) continue; // consecutive turns share one prompt
-    s.add(ev.intentText);
-    out.set(ev.sessionId, (out.get(ev.sessionId) ? out.get(ev.sessionId) + '\n' : '') + ev.intentText);
+  const sources = (source ? [source] : Object.keys(ADAPTERS)) as Source[];
+  for (const src of sources) {
+    const adapter = ADAPTERS[src];
+    if (!adapter) continue;
+    let events;
+    try {
+      events = adapter().events;
+    } catch {
+      continue; // a malformed local log in one source must never abort the others
+    }
+    for (const ev of events) {
+      if (!ev.intentText) continue;
+      let s = seen.get(ev.sessionId);
+      if (!s) seen.set(ev.sessionId, (s = new Set()));
+      if (s.has(ev.intentText)) continue; // consecutive turns share one prompt
+      s.add(ev.intentText);
+      out.set(ev.sessionId, (out.get(ev.sessionId) ? out.get(ev.sessionId) + '\n' : '') + ev.intentText);
+    }
   }
   return out;
 }
@@ -114,7 +132,7 @@ export function runCategorize(
   }
 
   // Derive intent on-device, then persist first-wins.
-  const textMap = intentTextBySession();
+  const textMap = intentTextBySession(opts.source);
   const toRecord = aggs.map((a) => {
     const intent = deriveSessionIntent(textMap.get(a.sessionId) ?? '', { activity: a.activity, tools: a.tools });
     return {
