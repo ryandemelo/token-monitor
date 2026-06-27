@@ -463,6 +463,26 @@ test('e2e: categorize clusters intents offline, flags cross-project dup, never l
   // Idempotent: a second run records nothing new and freezes intent ids first-wins.
   const idsAfter = [...loadIntents(openDb(dbPath), ['sa', 'sb', 'sc']).values()].map((r) => r.intent_id).sort();
   assert.deepEqual(idsAfter, idsBefore, 'intent ids must be stable across runs');
+
+  // PR3: --html writes a self-contained categorize dashboard, still leak-free.
+  const htmlPath = join(home, 'cat.html');
+  assert.equal(run(['categorize', '--html', htmlPath, ...DAYS], { home }).code, 0);
+  const catHtml = readFileSync(htmlPath, 'utf8');
+  assert.ok(catHtml.startsWith('<!doctype html>'));
+  assert.ok(catHtml.includes('Duplicate work'), 'dashboard missing Duplicate work section');
+  assert.ok(catHtml.includes('proj-auth-a') && catHtml.includes('proj-auth-b'), 'dashboard must name both projects');
+  assert.ok(catHtml.includes('raw prompt text is never stored'), 'dashboard missing privacy footnote');
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!catHtml.includes(leak), `categorize --html leaked "${leak}"`);
+  }
+
+  // PR3: report cross-surfaces the duplicate-work signal from the frozen intents.
+  const rep = run(['report', ...DAYS], { home });
+  assert.equal(rep.code, 0);
+  assert.match(rep.stdout, /🔁 1 recurring task spanning ≥2 projects/, 'report missing the duplicate-work callout');
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!rep.stdout.includes(leak), `report duplicate-work line leaked "${leak}"`);
+  }
 });
 
 test('e2e: unknown command and bare invocation fail with help', () => {

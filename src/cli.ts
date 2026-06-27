@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { ADAPTERS } from './adapters/index.js';
 import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
-import { runCategorize } from './categorize.js';
+import { runCategorize, categorizeSummary } from './categorize.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
@@ -12,7 +12,7 @@ import { syncFindings, recordLlmFindings } from './followthrough.js';
 import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
-import { renderHtml, renderTeamHtml } from './html.js';
+import { renderHtml, renderTeamHtml, renderCategorizeHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, buildLlmTrackPrompt, runLlm, runLlmCapture, parseLlmFindings, renderTrackedLlm, detectAgent } from './analyze.js';
 import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor, DEFAULT_KEY_DIR } from './sign.js';
 import { fetchTeamConfig, saveConfig, loadConfig, pushExport, installSchedule, removeSchedule } from './deploy.js';
@@ -25,7 +25,7 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
   token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
-  token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
@@ -73,7 +73,7 @@ Options:
   --team      member map: flat (\`alice: frontend\`) or two-level YAML
               (\`platform:\` header, indented members), or JSON
   --by        merge rollup axis: team or discipline (default: discipline)
-  --html      also write the merged team dashboard to this path
+  --html      write an HTML dashboard to this path (merge: team rollup; categorize: task categories)
   --db        SQLite path (default: ${DEFAULT_DB})
 `;
 
@@ -280,7 +280,12 @@ Signing fingerprint (send to your team lead for keys.json):
         !values.project && !values.source && events.length > 0
           ? syncFindings(db, computeMetrics(events))
           : undefined;
-      let out = renderReport(events, { days, follow });
+      // Cross-surface the duplicate-work signal from any prior `categorize` run
+      // (read-only over frozen intents; absent until the user has categorized).
+      const cat = events.length > 0
+        ? categorizeSummary(db, { days, project: values.project, source: values.source })
+        : undefined;
+      let out = renderReport(events, { days, follow, categorize: cat });
       if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
       console.log(out);
     }
@@ -307,7 +312,10 @@ Signing fingerprint (send to your team lead for keys.json):
       threshold,
       minCluster,
     });
-    if (values.json) {
+    if (values.html) {
+      writeFileSync(values.html, renderCategorizeHtml(result, days));
+      console.log(`Wrote ${values.html} (${result.totalSessions} sessions, last ${days} days). Open it in a browser.`);
+    } else if (values.json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(renderCategorize(result, days));
@@ -378,7 +386,8 @@ Signing fingerprint (send to your team lead for keys.json):
     const days = Number(values.days) || 30;
     const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);
     const follow = events.length > 0 ? syncFindings(db, computeMetrics(events)) : undefined;
-    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous }));
+    const cat = events.length > 0 ? categorizeSummary(db, { days }) : undefined;
+    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous, categorize: cat }));
     console.log(`Wrote ${values.out} (${events.length} turns, last ${days} days). Open it in a browser.`);
   } else {
     console.error(`Unknown command "${cmd}"\n`);

@@ -11,7 +11,8 @@ import type { EnrichedRec } from './recommendations.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
-import type { CategorizeResult } from './categorize.js';
+import type { CategorizeResult, CategorizeSummary } from './categorize.js';
+import { fmtCategorizeSummary } from './categorize.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -67,7 +68,7 @@ const STATUS_LABEL: Record<FollowRow['status'], string> = {
 
 export function renderReport(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[] },
+  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary },
 ): string {
   if (events.length === 0) {
     return 'No events in range. Run `token-monitor collect` first, or widen --days.';
@@ -106,6 +107,11 @@ export function renderReport(
   out.push(
     `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${RESET}`,
   );
+  if (opts.categorize) {
+    out.push(
+      `  ${YELLOW}🔁 ${fmtCategorizeSummary(opts.categorize)}${RESET} ${DIM}— run \`categorize\` for detail${RESET}`,
+    );
+  }
 
   out.push(section('By project'));
   const projRows = [...groupBy(events, 'project').entries()]
