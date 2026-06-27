@@ -216,6 +216,28 @@ test('e2e: analyze --llm --track records LLM advice into follow-through', () => 
   assert.match(filtered.stderr, /unfiltered window/);
 });
 
+test('e2e: --track records nothing when the agent fails or returns no JSON', () => {
+  // (1) valid JSON but a nonzero exit -> not recorded, CLI propagates failure.
+  const failJson = join(HOME, 'fail-json.mjs');
+  writeFileSync(
+    failJson,
+    "process.stdout.write(JSON.stringify({interventions:[{metric:'retryShare',title:'x',rationale:'y'}]}));process.exit(3);",
+  );
+  const r1 = run(['analyze', '--track', ...DAYS], { env: { TOKEN_MONITOR_LLM_CMD: `${process.execPath} ${failJson}` } });
+  assert.notEqual(r1.code, 0);
+  assert.match(r1.stderr, /exited with status/);
+
+  // (2) clean exit but no parseable JSON -> nonzero, nothing recorded.
+  const noJson = join(HOME, 'no-json.mjs');
+  writeFileSync(noJson, "process.stdout.write('I have no structured advice for you.');");
+  const r2 = run(['analyze', '--track', ...DAYS], { env: { TOKEN_MONITOR_LLM_CMD: `${process.execPath} ${noJson}` } });
+  assert.notEqual(r2.code, 0);
+  assert.match(r2.stderr, /No trackable interventions/);
+
+  // Neither attempt persisted a retryShare row.
+  assert.ok(!run(['report', ...DAYS]).stdout.includes('llm:retryShare'));
+});
+
 test('e2e: init from local config + push delivers a verifiable export', () => {
   const home2 = mkdtempSync(join(tmpdir(), 'tm-e2e-init-'));
   cpSync(join(FIXTURES, 'claude'), join(home2, '.claude', 'projects'), { recursive: true });

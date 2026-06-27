@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHtml } from '../src/html.js';
 import { makeStored } from './helpers.js';
+import type { FollowRow } from '../src/followthrough.js';
 
 test('renderHtml produces a self-contained document with key sections', () => {
   const html = renderHtml(
@@ -25,4 +26,17 @@ test('renderHtml escapes project names', () => {
     { days: 30 },
   );
   assert.ok(!html.includes('<img src=x'));
+});
+
+test('renderHtml marks LLM-origin follow-through rows with a robot', () => {
+  const follow: FollowRow[] = [{
+    key: 'llm:cacheHitRatio', metric: 'cacheHitRatio', direction: 'up',
+    baseline: 0.1, current: 0.1, createdAt: '2026-06-01', status: 'tracking', origin: 'llm',
+  }];
+  const html = renderHtml(
+    [makeStored({ activity: 'coding', input_tokens: 1000, output_tokens: 0 })],
+    { days: 30, follow },
+  );
+  assert.ok(html.includes('🤖'));
+  assert.ok(html.includes('llm:cacheHitRatio'));
 });

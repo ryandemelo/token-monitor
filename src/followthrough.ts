@@ -228,7 +228,8 @@ export function syncFindings(
  * they target (`llm:<metric>`) so re-running `--track` keeps the original
  * baseline and follow-through can measure whether the advice moved the number.
  * At most one tracked intervention per metric — the first advice for it wins
- * (INSERT OR IGNORE). Returns the LLM rows, re-measured against `m`.
+ * (INSERT OR IGNORE). Returns the LLM rows for THIS call's metrics, re-measured
+ * against `m` (not every llm row ever stored), so callers summarise one run.
  */
 export function recordLlmFindings(
   db: DatabaseSync,
@@ -245,7 +246,8 @@ export function recordLlmFindings(
     const message = it.rationale ? `${it.title} — ${it.rationale}` : it.title;
     insert.run(`llm:${it.metric}`, it.metric, METRIC_DIRECTION[it.metric], message, metricValue(m, it.metric), now);
   }
-  return syncFindings(db, m, now).filter((r) => r.origin === 'llm');
+  const metrics = new Set(interventions.map((it) => it.metric));
+  return syncFindings(db, m, now).filter((r) => r.origin === 'llm' && metrics.has(r.metric));
 }
 
 export function fmtMetric(key: MetricKey, v: number): string {

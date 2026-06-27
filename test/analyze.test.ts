@@ -110,6 +110,20 @@ test('extractJson finds the first balanced object inside surrounding noise', () 
   assert.equal(extractJson('no json here'), undefined);
 });
 
+test('parseLlmFindings recovers the payload past a stray bracket region in prose', () => {
+  // a non-JSON {curly} and a valid-but-useless [0] precede the real object
+  const text = 'Notes: {see below} and item [0]:\n{"interventions":[{"metric":"cacheHitRatio","title":"reuse"}]}';
+  assert.equal(parseLlmFindings(text).interventions[0]?.metric, 'cacheHitRatio');
+});
+
+test('parseLlmFindings respects braces and escapes inside JSON strings', () => {
+  const text = 'Here: {"interventions":[{"metric":"reworkRatio","title":"close the } and ] here","rationale":"a \\"quote\\" too"}]} done';
+  const got = parseLlmFindings(text);
+  assert.equal(got.interventions[0].metric, 'reworkRatio');
+  assert.equal(got.interventions[0].title, 'close the } and ] here');
+  assert.equal(got.interventions[0].rationale, 'a "quote" too');
+});
+
 test('parseLlmFindings: strict object form', () => {
   const { interventions, dropped } = parseLlmFindings(
     '{"interventions":[{"metric":"cacheHitRatio","title":"Reuse prompt","rationale":"cache 12%"}]}',

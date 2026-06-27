@@ -165,6 +165,28 @@ test('LLM-tracked findings never auto-resolve when a rule finding clears', () =>
   assert.equal(llm.origin, 'llm');
 });
 
+test('recordLlmFindings returns only this run\'s metrics, not the whole history', () => {
+  const db = openDb(':memory:');
+  recordLlmFindings(db, [{ metric: 'cacheHitRatio', title: 'a', rationale: '' }], badCache(), '2026-06-01T00:00:00.000Z');
+  const second = recordLlmFindings(db, [{ metric: 'reworkRatio', title: 'b', rationale: '' }], badCache(), '2026-06-08T00:00:00.000Z');
+  assert.deepEqual(second.map((r) => r.key), ['llm:reworkRatio']); // not cacheHitRatio from run 1
+});
+
+test('an LLM-tracked finding flips to regressing when its (canonical-direction) metric worsens', () => {
+  const db = openDb(':memory:');
+  // Baseline: zero rework (good). The model claims nothing about direction.
+  const lowRework = computeMetrics([makeStored({ activity: 'coding', input_tokens: 100_000, output_tokens: 0 })]);
+  recordLlmFindings(db, [{ metric: 'reworkRatio', title: 'Keep planning first', rationale: '' }], lowRework, '2026-06-01T00:00:00.000Z');
+  // Later: a failure then heavy coding pushes rework up — the metric got worse.
+  const highRework = computeMetrics([
+    makeStored({ session_id: 'r', ts: '2026-06-02T00:00:00Z', activity: 'coding', is_error: 1, input_tokens: 1_000, output_tokens: 0 }),
+    makeStored({ session_id: 'r', ts: '2026-06-02T00:01:00Z', activity: 'coding', input_tokens: 100_000, output_tokens: 0 }),
+  ]);
+  const llm = syncFindings(db, highRework, '2026-06-08T00:00:00.000Z').find((r) => r.key === 'llm:reworkRatio')!;
+  assert.equal(llm.direction, 'down'); // canonical, from METRIC_DIRECTION
+  assert.equal(llm.status, 'regressing');
+});
+
 test('ensureFollowTable migrates a pre-origin recommendations table', () => {
   const db = openDb(':memory:');
   // An older db: recommendations table without the origin column.

@@ -228,8 +228,11 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
 }
 
 /** Metrics follow-through can re-measure — a tracked LLM intervention must target one. */
+// premiumShare is intentionally excluded: premiumWasteShare already covers
+// premium overspend and is the one carried in the payload + definitions, so the
+// model only ever targets a number it can actually see and cite.
 export const TRACKABLE_METRICS: MetricKey[] = [
-  'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio', 'premiumShare',
+  'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio',
   'contextBloatShare', 'coldRestartShare', 'premiumWasteShare', 'retryShare',
 ];
 
@@ -275,37 +278,46 @@ ${JSON.stringify(buildLlmPayload(events, days))}`;
 }
 
 /**
- * Pull the first balanced JSON value out of an LLM response that may wrap it in
- * prose or a ```json fence. Returns undefined when nothing parses.
+ * Every parseable JSON value in the text, best-first: a direct parse, then a
+ * ```json fence, then each balanced { } / [ ] region left to right (strings and
+ * escapes respected). A stray brace in prose before the real JSON therefore
+ * can't hide it — later regions are still considered.
  */
-export function extractJson(text: string): unknown {
-  const tryParse = (s: string): unknown => {
-    try { return JSON.parse(s); } catch { return undefined; }
+function jsonCandidates(text: string): unknown[] {
+  const out: unknown[] = [];
+  const push = (s: string) => {
+    try { out.push(JSON.parse(s)); } catch { /* not JSON, skip */ }
   };
-  const direct = tryParse(text.trim());
-  if (direct !== undefined) return direct;
+  push(text.trim());
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) {
-    const f = tryParse(fence[1].trim());
-    if (f !== undefined) return f;
+  if (fence) push(fence[1].trim());
+  for (let i = 0; i < text.length; ) {
+    const rel = text.slice(i).search(/[[{]/);
+    if (rel < 0) break;
+    const open = i + rel;
+    const openCh = text[open];
+    const closeCh = openCh === '{' ? '}' : ']';
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = open; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === openCh) depth++;
+      else if (c === closeCh && --depth === 0) { end = j; break; }
+    }
+    if (end < 0) break; // unbalanced from here on
+    push(text.slice(open, end + 1));
+    i = end + 1; // continue after this region, not inside it
   }
-  // Scan for the first balanced { } or [ ], respecting strings and escapes.
-  const open = text.search(/[[{]/);
-  if (open < 0) return undefined;
-  const openCh = text[open];
-  const closeCh = openCh === '{' ? '}' : ']';
-  let depth = 0, inStr = false, esc = false;
-  for (let i = open; i < text.length; i++) {
-    const c = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === '\\') esc = true;
-      else if (c === '"') inStr = false;
-    } else if (c === '"') inStr = true;
-    else if (c === openCh) depth++;
-    else if (c === closeCh && --depth === 0) return tryParse(text.slice(open, i + 1));
-  }
-  return undefined;
+  return out;
+}
+
+/** First parseable JSON value (prose/fence-tolerant); undefined when none. */
+export function extractJson(text: string): unknown {
+  return jsonCandidates(text)[0];
 }
 
 export interface ParsedFindings {
@@ -318,34 +330,47 @@ export interface ParsedFindings {
  * Validate an LLM response into trackable interventions: each must name a
  * known metric and a title; the first per metric wins (follow-through measures
  * one number per metric). Malformed or extra items are dropped, not thrown.
+ * Of all JSON values in the response, the first that yields ≥1 intervention is
+ * used — so a stray `[0]` or `{note}` in prose can't shadow the real payload.
  */
 export function parseLlmFindings(text: string): ParsedFindings {
-  const data = extractJson(text);
-  const arr: unknown[] = Array.isArray(data)
-    ? data
-    : Array.isArray((data as { interventions?: unknown })?.interventions)
-      ? (data as { interventions: unknown[] }).interventions
-      : [];
   const trackable = new Set<string>(TRACKABLE_METRICS);
-  const seen = new Set<string>();
-  const interventions: LlmIntervention[] = [];
-  let dropped = 0;
-  for (const raw of arr) {
-    const it = raw as { metric?: unknown; title?: unknown; rationale?: unknown };
-    const metric = String(it?.metric ?? '');
-    const title = String(it?.title ?? '').trim().slice(0, 120);
-    if (!trackable.has(metric) || !title || seen.has(metric)) {
-      dropped++;
-      continue;
+  const toArray = (data: unknown): unknown[] =>
+    Array.isArray(data)
+      ? data
+      : Array.isArray((data as { interventions?: unknown })?.interventions)
+        ? (data as { interventions: unknown[] }).interventions
+        : [];
+  const validate = (arr: unknown[]): ParsedFindings => {
+    const seen = new Set<string>();
+    const interventions: LlmIntervention[] = [];
+    let dropped = 0;
+    for (const raw of arr) {
+      const it = raw as { metric?: unknown; title?: unknown; rationale?: unknown };
+      const metric = String(it?.metric ?? '');
+      const title = String(it?.title ?? '').trim().slice(0, 120);
+      if (!trackable.has(metric) || !title || seen.has(metric)) {
+        dropped++;
+        continue;
+      }
+      seen.add(metric);
+      interventions.push({
+        metric: metric as MetricKey,
+        title,
+        rationale: String(it?.rationale ?? '').trim().slice(0, 400),
+      });
     }
-    seen.add(metric);
-    interventions.push({
-      metric: metric as MetricKey,
-      title,
-      rationale: String(it?.rationale ?? '').trim().slice(0, 400),
-    });
+    return { interventions, dropped };
+  };
+  let fallback: ParsedFindings = { interventions: [], dropped: 0 };
+  for (const candidate of jsonCandidates(text)) {
+    const arr = toArray(candidate);
+    if (arr.length === 0) continue;
+    const result = validate(arr);
+    if (result.interventions.length > 0) return result;
+    fallback = result; // parsed but everything dropped — keep for the count
   }
-  return { interventions, dropped };
+  return fallback;
 }
 
 /** Terminal summary of the interventions just recorded for tracking. */

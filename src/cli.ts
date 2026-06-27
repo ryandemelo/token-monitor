@@ -300,10 +300,16 @@ Signing fingerprint (send to your team lead for keys.json):
         process.exit(1);
       }
       const { status, stdout } = runLlmCapture(buildLlmTrackPrompt(events, days), agent);
+      // A nonzero exit means the run failed (rate limit, crash, partial output);
+      // don't bank possibly-truncated advice as a permanent, never-clearing baseline.
+      if (status !== 0) {
+        console.error(`Agent exited with status ${status}; not recording (its output may be incomplete).`);
+        process.exit(status);
+      }
       const parsed = parseLlmFindings(stdout);
       if (parsed.interventions.length === 0) {
         console.error('No trackable interventions parsed from the agent response (expected strict JSON targeting a known metric).');
-        process.exit(status || 1);
+        process.exit(1);
       }
       const rows = recordLlmFindings(db, parsed.interventions, computeMetrics(events));
       console.log(renderTrackedLlm(rows, parsed));
