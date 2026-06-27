@@ -43,6 +43,12 @@ export interface UsageEvent {
   isError: boolean;
   gitBranch?: string;
   activity?: Activity;
+  /**
+   * The user's prompt text for this turn, carried in-memory ONLY for `categorize`
+   * to derive an on-device intent fingerprint. Never persisted: insertEvents has
+   * no column for it. Redaction happens in intent.ts before anything is stored.
+   */
+  intentText?: string;
 }
 
 export interface CollectResult {

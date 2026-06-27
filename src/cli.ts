@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { ADAPTERS } from './adapters/index.js';
 import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
-import { renderReport, renderTeamReport, renderTrend } from './report.js';
+import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
+import { runCategorize } from './categorize.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
@@ -24,6 +25,7 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
   token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
@@ -38,6 +40,9 @@ Commands:
   collect   Scan local agent logs (Claude Code, Gemini CLI, Codex, Cursor,
             Antigravity, Copilot Chat) into SQLite
   report    Activity breakdown, cost, personas, and recommendations
+  categorize  Cluster sessions by task intent (on-device, offline), flag work
+            repeated across projects, and surface org-skill candidates. Prompt
+            text is redacted to keyword labels locally — never stored or sent.
   analyze   Session-level deep dive; --llm asks your local agent CLI for
             prioritized recommendations (sends aggregate metrics only); add
             --track to record those recommendations and measure (via
@@ -127,6 +132,8 @@ async function main() {
       by: { type: 'string' },
       html: { type: 'string' },
       provider: { type: 'string' },
+      threshold: { type: 'string' },
+      'min-cluster': { type: 'string' },
       from: { type: 'string' },
       hours: { type: 'string' },
       remove: { type: 'boolean', default: false },
@@ -276,6 +283,34 @@ Signing fingerprint (send to your team lead for keys.json):
       let out = renderReport(events, { days, follow });
       if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
       console.log(out);
+    }
+  } else if (cmd === 'categorize') {
+    const days = Number(values.days);
+    if (!Number.isInteger(days) || days < 1) {
+      console.error(`--days must be a positive integer, got "${values.days}"`);
+      process.exit(1);
+    }
+    const threshold = values.threshold !== undefined ? Number(values.threshold) : undefined;
+    if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
+      console.error(`--threshold must be a number between 0 and 1, got "${values.threshold}"`);
+      process.exit(1);
+    }
+    const minCluster = values['min-cluster'] !== undefined ? Number(values['min-cluster']) : undefined;
+    if (minCluster !== undefined && (!Number.isInteger(minCluster) || minCluster < 2)) {
+      console.error(`--min-cluster must be an integer ≥ 2, got "${values['min-cluster']}"`);
+      process.exit(1);
+    }
+    const result = runCategorize(db, {
+      days,
+      project: values.project,
+      source: values.source,
+      threshold,
+      minCluster,
+    });
+    if (values.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(renderCategorize(result, days));
     }
   } else if (cmd === 'analyze') {
     const days = Number(values.days) || 30;

@@ -39,16 +39,31 @@ interface ClaudeLine {
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
     };
-    content?: Array<{
-      type: string;
-      name?: string;
-      id?: string;
-      input?: { command?: string };
-      tool_use_id?: string;
-      is_error?: boolean;
-      content?: unknown;
-    }>;
+    // User messages can be a plain string or a block array; assistant messages
+    // are always a block array.
+    content?: string | ContentBlock[];
   };
+}
+
+interface ContentBlock {
+  type: string;
+  name?: string;
+  id?: string;
+  text?: string;
+  input?: { command?: string };
+  tool_use_id?: string;
+  is_error?: boolean;
+  content?: unknown;
+}
+
+/** Pull the user's typed text out of a `user` line (string or text blocks). */
+function userText(content: string | ContentBlock[] | undefined): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join('\n');
 }
 
 /** Parse Claude Code session transcripts: ~/.claude/projects/<dir>/<session>.jsonl */
@@ -77,6 +92,9 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
       }
       // tool_use id -> event, so a failed tool_result can flag its turn
       const byToolUseId = new Map<string, UsageEvent>();
+      // The most recent genuine user prompt, carried forward onto the assistant
+      // turns it triggered (transient — used only by `categorize`).
+      let lastUserText = '';
       for (const line of text.split('\n')) {
         if (!line.trim()) continue;
         let d: ClaudeLine;
@@ -85,18 +103,23 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
         } catch {
           continue;
         }
-        if (d.type === 'user' && Array.isArray(d.message?.content)) {
-          for (const block of d.message.content) {
-            if (
-              block.type === 'tool_result' &&
-              block.is_error &&
-              block.tool_use_id &&
-              !isDeclination(block.content)
-            ) {
-              const ev = byToolUseId.get(block.tool_use_id);
-              if (ev) ev.isError = true;
+        if (d.type === 'user') {
+          const content = d.message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (
+                block.type === 'tool_result' &&
+                block.is_error &&
+                block.tool_use_id &&
+                !isDeclination(block.content)
+              ) {
+                const ev = byToolUseId.get(block.tool_use_id);
+                if (ev) ev.isError = true;
+              }
             }
           }
+          const t = userText(content).trim();
+          if (t) lastUserText = t;
           continue;
         }
         if (d.type !== 'assistant' || !d.message?.usage || !d.uuid) continue;
@@ -108,7 +131,8 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
         const commands: string[] = [];
         let hasThinking = false;
         const toolUseIds: string[] = [];
-        for (const block of d.message.content ?? []) {
+        const blocks = Array.isArray(d.message.content) ? d.message.content : [];
+        for (const block of blocks) {
           if (block.type === 'tool_use' && block.name) {
             tools.push(block.name);
             if (block.id) toolUseIds.push(block.id);
@@ -135,6 +159,7 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
           hasThinking,
           isError: false,
           gitBranch: d.gitBranch,
+          intentText: lastUserText || undefined,
         };
         ev.activity = classify(ev);
         events.push(ev);

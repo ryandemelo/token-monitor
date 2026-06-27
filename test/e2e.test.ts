@@ -352,6 +352,101 @@ test('e2e: reconcile verifies local totals against a mock usage API', async () =
   }
 });
 
+test('e2e: categorize clusters intents offline, flags cross-project dup, never leaks raw prompts', async () => {
+  // Fresh HOME with hand-built claude transcripts: two projects do the SAME
+  // auth task (a duplicate-work cluster), one does something unrelated. One
+  // prompt embeds secrets that must be redacted on-device.
+  const home = mkdtempSync(join(tmpdir(), 'tm-e2e-categorize-'));
+  const SECRET_KEY = 'sk-CANARYdeadbeef1234567';
+  const SECRET_EMAIL = 'leak@secret.example';
+  const RAW_PHRASE = 'admin credential is';
+
+  const writeSession = (project: string, sid: string, uuid: string, prompt: string) => {
+    const dir = join(home, '.claude', 'projects', project);
+    mkdirSync(dir, { recursive: true });
+    const cwd = `/Users/dev/${project}`;
+    const lines = [
+      { type: 'user', sessionId: sid, timestamp: '2026-06-01T10:00:00.000Z', message: { content: [{ type: 'text', text: prompt }] } },
+      { type: 'assistant', uuid, sessionId: sid, cwd, gitBranch: 'main', timestamp: '2026-06-01T10:00:05.000Z',
+        message: { model: 'claude-opus-4-7', usage: { input_tokens: 500, output_tokens: 300 }, content: [{ type: 'tool_use', id: uuid + 't', name: 'Edit', input: {} }] } },
+    ];
+    writeFileSync(join(dir, sid + '.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  };
+
+  writeSession('proj-auth-a', 'sa', 'ua',
+    `Add JWT authentication and login to the REST API service. The ${RAW_PHRASE} ${SECRET_KEY} and contact ${SECRET_EMAIL}`);
+  writeSession('proj-auth-b', 'sb', 'ub',
+    'Implement JWT authentication and a login endpoint for the REST API');
+  writeSession('proj-css', 'sc', 'uc',
+    'Fix the CSS flexbox layout on the dashboard settings page');
+
+  // Two tool-only sessions (no user text) in different projects: they share an
+  // activity+tool fallback fingerprint and cluster, but must NEVER be flagged as
+  // duplicate work or an org-skill candidate (no real-text evidence).
+  const writeToolSession = (project: string, sid: string, uuid: string) => {
+    const dir = join(home, '.claude', 'projects', project);
+    mkdirSync(dir, { recursive: true });
+    const line = {
+      type: 'assistant', uuid, sessionId: sid, cwd: `/Users/dev/${project}`, gitBranch: 'main',
+      timestamp: '2026-06-01T11:00:00.000Z',
+      message: { model: 'claude-opus-4-7', usage: { input_tokens: 300, output_tokens: 100 }, content: [{ type: 'tool_use', id: uuid + 't', name: 'Bash', input: { command: 'ls' } }] },
+    };
+    writeFileSync(join(dir, sid + '.jsonl'), JSON.stringify(line) + '\n');
+  };
+  writeToolSession('proj-tool-x', 'sd', 'ud');
+  writeToolSession('proj-tool-y', 'se', 'ue');
+
+  assert.equal(run(['collect', '--source', 'claude-code'], { home }).code, 0);
+
+  const cat = run(['categorize', ...DAYS], { home });
+  assert.equal(cat.code, 0, cat.stderr);
+  assert.ok(cat.stdout.includes('By category'), 'missing By category section');
+  assert.match(cat.stdout, /auth|jwt|login/, 'auth cluster name missing');
+  assert.ok(cat.stdout.includes('Duplicate work'), 'missing Duplicate work section');
+  assert.ok(cat.stdout.includes('proj-auth-a') && cat.stdout.includes('proj-auth-b'),
+    'duplicate-work cluster must name both projects');
+
+  // Secrets must never reach stdout.
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!cat.stdout.includes(leak), `leaked "${leak}" to stdout`);
+  }
+
+  // DB canary: the sqlite file must contain no secret and no verbatim sentence.
+  const dbPath = join(home, '.token-monitor', 'token-monitor.sqlite');
+  const dbBytes = readFileSync(dbPath).toString('latin1');
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!dbBytes.includes(leak), `leaked "${leak}" into the database`);
+  }
+
+  // session_intents holds 3 labels-only rows, each a bounded redacted fingerprint.
+  const { openDb, loadIntents } = await import('../src/store.js');
+  const db = openDb(dbPath);
+  const intents = loadIntents(db, ['sa', 'sb', 'sc']);
+  assert.equal(intents.size, 3, 'expected one intent row per session');
+  for (const row of intents.values()) {
+    const fp = JSON.parse(row.fingerprint) as string[];
+    assert.ok(fp.length <= 8, 'fingerprint exceeded 8 tokens');
+    assert.ok(!fp.some((t) => t.toLowerCase().includes('canary')), 'secret token persisted in fingerprint');
+    assert.equal(row.has_text, 1, 'these sessions had real user text');
+  }
+  const idsBefore = [...intents.values()].map((r) => r.intent_id).sort();
+
+  // --json surfaces the deterministic duplicate-work signal across 2 projects.
+  const json = JSON.parse(run(['categorize', '--json', ...DAYS], { home }).stdout);
+  assert.ok(json.duplicates.length >= 1, 'expected a duplicate-work cluster');
+  assert.ok(json.duplicates.some((d: { projects: string[] }) => d.projects.length >= 2));
+
+  // No-text fallback clusters must be gated out of the high-trust signals.
+  type Cat = { hasText: boolean; sessions: number };
+  assert.ok(json.duplicates.every((d: Cat) => d.hasText), 'no-text cluster wrongly flagged as duplicate work');
+  assert.ok(json.categories.some((c: Cat) => !c.hasText && c.sessions >= 2), 'expected the tool-only sessions to cluster');
+  assert.ok(!json.skillCandidates.some((c: Cat) => !c.hasText), 'no-text cluster wrongly offered as an org-skill candidate');
+
+  // Idempotent: a second run records nothing new and freezes intent ids first-wins.
+  const idsAfter = [...loadIntents(openDb(dbPath), ['sa', 'sb', 'sc']).values()].map((r) => r.intent_id).sort();
+  assert.deepEqual(idsAfter, idsBefore, 'intent ids must be stable across runs');
+});
+
 test('e2e: unknown command and bare invocation fail with help', () => {
   assert.equal(run(['definitely-not-a-command']).code, 1);
   const bare = run([]);

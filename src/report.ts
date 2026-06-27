@@ -11,6 +11,7 @@ import type { EnrichedRec } from './recommendations.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
+import type { CategorizeResult } from './categorize.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -213,6 +214,66 @@ export function renderTrend(
       ),
     );
   }
+  return out.join('\n');
+}
+
+export function renderCategorize(r: CategorizeResult, days: number): string {
+  if (r.totalSessions === 0) {
+    return 'No sessions in range. Run `token-monitor collect` first, or widen --days.';
+  }
+  const out: string[] = [];
+  out.push(section(`Task categories — last ${days} days`));
+  out.push(
+    `  ${DIM}${r.totalSessions} sessions · ${r.textSessions} categorized from prompt text · ${r.categories.length} categories${RESET}`,
+  );
+
+  out.push(section('By category'));
+  out.push(
+    table(
+      ['Category', 'Sessions', 'Projects', 'Tokens', 'Cost'],
+      r.categories.slice(0, 20).map((c) => [
+        (c.duplicate ? '⚠ ' : '') + c.name + (c.hasText ? '' : ` ${DIM}(no text)${RESET}`),
+        String(c.sessions),
+        String(c.projects.length),
+        fmtTokens(c.tokens),
+        (c.estimated ? '~' : '') + '$' + c.cost.toFixed(2),
+      ]),
+    ),
+  );
+
+  out.push(section('Duplicate work (same task across ≥2 projects)'));
+  if (r.duplicates.length) {
+    for (const c of r.duplicates.slice(0, 10)) {
+      out.push(
+        `  ${YELLOW}⚠${RESET} ${BOLD}${c.name}${RESET} — ${c.sessions} sessions across ${c.projects.length} projects ` +
+          `${DIM}(${c.projects.join(', ')})${RESET}  ${GREEN}${c.estimated ? '~' : ''}$${c.cost.toFixed(2)}${RESET}`,
+      );
+    }
+    out.push(
+      `\n  ${DIM}Recurring across projects → codify it as a shared skill/prompt instead of re-deriving it.${RESET}`,
+    );
+  } else {
+    out.push(`  ${DIM}No task repeated across multiple projects in this window.${RESET}`);
+  }
+
+  if (r.skillCandidates.length) {
+    out.push(section('Org-skill candidates (recurring tasks worth codifying)'));
+    out.push(
+      table(
+        ['Task', 'Sessions', 'Projects', 'Cost'],
+        r.skillCandidates.slice(0, 10).map((c) => [
+          c.name,
+          String(c.sessions),
+          String(c.projects.length),
+          (c.estimated ? '~' : '') + '$' + c.cost.toFixed(2),
+        ]),
+      ),
+    );
+  }
+
+  out.push(
+    `\n  ${DIM}Labels are derived on-device from redacted prompts; raw prompt text is never stored.${RESET}\n`,
+  );
   return out.join('\n');
 }
 

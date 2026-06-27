@@ -29,7 +29,7 @@ const TEST_RE =
 
 const SHIP_RE = /\bgit\s+(commit|push)\b|\bgh\s+pr\b|\bgit\s+merge\b/i;
 
-function norm(name: string): string {
+export function norm(name: string): string {
   return name.toLowerCase().replace(/^mcp__\S+__/, '');
 }
 
