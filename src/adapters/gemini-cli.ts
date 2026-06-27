@@ -12,6 +12,8 @@ interface GeminiMessage {
   type?: string;
   timestamp?: string;
   model?: string;
+  /** User-turn prompt; a plain string or block array. In-memory only, for `categorize`. */
+  content?: string | Array<{ text?: string }>;
   tokens?: { input?: number; output?: number; cached?: number; thoughts?: number; tool?: number };
   thoughts?: unknown[];
   toolCalls?: Array<{ name?: string; status?: string; args?: { command?: string } }>;
@@ -21,6 +23,19 @@ interface GeminiChat {
   sessionId?: string;
   projectHash?: string;
   messages?: GeminiMessage[];
+}
+
+/** Flatten a message `content` (plain string or parts array) into one string. */
+function textOf(content: string | Array<{ text?: string }> | undefined): string {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => c?.text)
+      .filter((x): x is string => typeof x === 'string')
+      .join(' ')
+      .trim();
+  }
+  return '';
 }
 
 /** ~/.gemini/projects.json maps project paths to the hash dirs under tmp/. */
@@ -71,8 +86,16 @@ export function collectGeminiCli(root: string = ROOT): { events: UsageEvent[]; r
         continue;
       }
       const sessionId = chat.sessionId ?? file;
+      // Carry the latest user prompt forward to the assistant turns it triggered.
+      let lastUserText: string | undefined;
       for (const m of chat.messages ?? []) {
-        if (m.type === 'user' || !m.tokens || !m.id) continue;
+        if (m.type === 'user') {
+          // content may be a plain string or a parts array, depending on version.
+          const t = textOf(m.content);
+          if (t) lastUserText = t;
+          continue;
+        }
+        if (!m.tokens || !m.id) continue;
         const tools = (m.toolCalls ?? []).map((t) => t.name ?? 'unknown');
         const commands = (m.toolCalls ?? [])
           .map((t) => t.args?.command)
@@ -96,6 +119,7 @@ export function collectGeminiCli(root: string = ROOT): { events: UsageEvent[]; r
           commands,
           hasThinking: Array.isArray(m.thoughts) && m.thoughts.length > 0,
           isError,
+          intentText: lastUserText || undefined,
         };
         ev.activity = classify(ev);
         events.push(ev);

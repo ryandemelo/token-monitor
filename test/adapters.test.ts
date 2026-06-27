@@ -9,7 +9,7 @@ import { collectCursor } from '../src/adapters/cursor.js';
 import { collectAntigravity } from '../src/adapters/antigravity.js';
 import { collectCopilot } from '../src/adapters/copilot.js';
 import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 // dist/test/ -> repo root -> test/fixtures
@@ -57,6 +57,10 @@ test('gemini-cli adapter parses checkpoints incl. thoughts and tool errors', () 
 
   assert.equal(m2.activity, 'shipping'); // git commit command
   assert.equal(m2.isError, true); // failed tool call
+
+  // User-turn prompt carries forward to the assistant turns it triggered.
+  assert.equal(m1.intentText, 'refactor the database connection pooling logic');
+  assert.equal(m2.intentText, 'refactor the database connection pooling logic');
 });
 
 test('codex adapter diffs cumulative token counts into per-turn events', () => {
@@ -80,6 +84,10 @@ test('codex adapter diffs cumulative token counts into per-turn events', () => {
   assert.equal(t2.outputTokens, 70);
   assert.equal(t2.thinkingTokens, 5);
   assert.equal(t2.activity, 'coding'); // apply_patch
+
+  // User message carries forward to the turns it triggered.
+  assert.equal(t1.intentText, 'run the failing tests and patch the bug');
+  assert.equal(t2.intentText, 'run the failing tests and patch the bug');
 });
 
 test('antigravity adapter decodes gen_metadata blobs and attributes tool steps', () => {
@@ -141,6 +149,10 @@ test('cursor adapter emits turn-final token events, maps workspaces, skips abort
   assert.equal(t2.activity, 'coding'); // edit_file
   assert.equal(t2.isError, true); // errored tool linked to its turn
 
+  // Each turn-final event inherits the user prompt of its type-1 bubble.
+  assert.equal(t1.intentText, 'add retry with backoff to the http client');
+  assert.equal(t2.intentText, 'fix the failing authentication unit test');
+
   // The auth canary in ItemTable must never appear in adapter output.
   assert.ok(!JSON.stringify({ events, result }).includes('AUTH-CANARY'));
   assert.ok(result.note?.includes('completed turns'));
@@ -164,6 +176,7 @@ test('copilot adapter estimates tokens from text, parses json and jsonl sessions
   assert.deepEqual(r1.commands, ['npm test']);
   assert.equal(r1.activity, 'testing');
   assert.equal(r1.isError, false);
+  assert.equal(r1.intentText, 'Fix the failing test in utils.spec.ts'); // request message text
 
   assert.equal(r2.isError, true); // errorDetails without cancellation
   assert.equal(r2.activity, 'conversation');
@@ -173,6 +186,53 @@ test('copilot adapter estimates tokens from text, parses json and jsonl sessions
   assert.equal(s2.sessionId, 'cop-s2');
   assert.equal(s2.project, 'proj-cop2');
   assert.equal(s2.timestamp, new Date(1780000200000).toISOString());
+});
+
+test('adapters tolerate non-array (string/object) user-content shapes without throwing', () => {
+  // Local logs are untyped JSON: a user message `content` can be a plain string
+  // (Responses-style) or, for Copilot, a non-string `text`. None may crash the
+  // collector — adapters must fail soft. Regression guard for the PR2 fan-out.
+  const dir = mkdtempSync(join(tmpdir(), 'tm-shape-'));
+
+  // gemini: user content is a plain string
+  const gchats = join(dir, 'gemini', 'h1', 'chats');
+  mkdirSync(gchats, { recursive: true });
+  writeFileSync(join(gchats, 'session-x.json'), JSON.stringify({
+    sessionId: 'gx',
+    messages: [
+      { id: 'u', type: 'user', content: 'please refactor the connection pooling logic' },
+      { id: 'a', type: 'gemini', timestamp: '2026-06-01T00:00:00.000Z', model: 'gemini', tokens: { input: 10, output: 5 } },
+    ],
+  }));
+  const g = collectGeminiCli(join(dir, 'gemini'));
+  assert.equal(g.events.length, 1);
+  assert.equal(g.events[0].intentText, 'please refactor the connection pooling logic');
+
+  // codex: user content is a plain string
+  const cdir = join(dir, 'codex', '2026', '06', '01');
+  mkdirSync(cdir, { recursive: true });
+  writeFileSync(join(cdir, 'rollout-x.jsonl'), [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'cx', cwd: '/p' } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: 'run the failing tests' } }),
+    JSON.stringify({ timestamp: '2026-06-01T00:00:00.000Z', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 10, output_tokens: 5 } } } }),
+  ].join('\n') + '\n');
+  const c = collectCodex(join(dir, 'codex'));
+  assert.equal(c.events.length, 1);
+  assert.equal(c.events[0].intentText, 'run the failing tests');
+
+  // copilot: message.text is a non-string object -> empty intent, no NaN tokens
+  const wsDir = join(dir, 'code', 'workspaceStorage', 'w1');
+  const sessDir = join(wsDir, 'chatSessions');
+  mkdirSync(sessDir, { recursive: true });
+  writeFileSync(join(wsDir, 'workspace.json'), JSON.stringify({ folder: 'file:///home/u/proj-x' }));
+  writeFileSync(join(sessDir, 's.json'), JSON.stringify({
+    sessionId: 'cs',
+    requests: [{ requestId: 'r', message: { text: { weird: true } }, response: [{ value: 'ok' }] }],
+  }));
+  const cop = collectCopilot(join(dir, 'code'));
+  assert.equal(cop.events.length, 1);
+  assert.equal(cop.events[0].intentText, undefined);
+  assert.ok(!Number.isNaN(cop.events[0].inputTokens), 'object text must not yield NaN tokens');
 });
 
 test('adapters return a note instead of throwing when logs are absent', () => {

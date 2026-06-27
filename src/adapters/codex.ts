@@ -25,6 +25,8 @@ interface CodexLine {
     model?: string;
     name?: string;
     arguments?: string;
+    role?: string;
+    content?: string | Array<{ type?: string; text?: string }>;
     info?: {
       total_token_usage?: TokenUsage;
       last_token_usage?: TokenUsage;
@@ -37,6 +39,19 @@ interface TokenUsage {
   cached_input_tokens?: number;
   output_tokens?: number;
   reasoning_output_tokens?: number;
+}
+
+/** Flatten a message `content` (plain string or block array) into one string. */
+function textOf(content: string | Array<{ text?: string }> | undefined): string {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => b?.text)
+      .filter((x): x is string => typeof x === 'string')
+      .join(' ')
+      .trim();
+  }
+  return '';
 }
 
 function* walk(dir: string): Generator<string> {
@@ -68,6 +83,7 @@ export function collectCodex(root: string = ROOT): { events: UsageEvent[]; resul
     let prev: TokenUsage | null = null;
     let pendingTools: string[] = [];
     let pendingCommands: string[] = [];
+    let lastUserText: string | undefined;
     let tick = 0;
 
     for (const line of text.split('\n')) {
@@ -85,6 +101,11 @@ export function collectCodex(root: string = ROOT): { events: UsageEvent[]; resul
         if (p.cwd) project = basename(p.cwd);
       } else if (p.type === 'turn_context' && p.model) {
         model = p.model;
+      } else if (d.type === 'response_item' && p.type === 'message' && p.role === 'user') {
+        // Carry the user prompt forward to the next token_count turn it triggered.
+        // content may be a plain string or a block array (format is unvalidated).
+        const t = textOf(p.content);
+        if (t) lastUserText = t;
       } else if (d.type === 'response_item' && p.type === 'function_call' && p.name) {
         pendingTools.push(p.name);
         if (/shell|exec/.test(p.name) && typeof p.arguments === 'string') {
@@ -123,6 +144,7 @@ export function collectCodex(root: string = ROOT): { events: UsageEvent[]; resul
           commands: pendingCommands,
           hasThinking: (delta.reasoning_output_tokens ?? 0) > 0,
           isError: false,
+          intentText: lastUserText || undefined,
         };
         ev.activity = classify(ev);
         events.push(ev);

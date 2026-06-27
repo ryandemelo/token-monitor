@@ -33,6 +33,8 @@ export function cursorUserDir(home: string = homedir()): string {
 interface Bubble {
   type?: number; // 1 = user, 2 = assistant
   createdAt?: string;
+  /** User-prompt text (type 1 bubbles); carried in-memory only, for `categorize`. */
+  text?: string;
   tokenCount?: { inputTokens?: number; outputTokens?: number };
   toolFormerData?: { name?: string; status?: string; rawArgs?: string };
   modelInfo?: { modelName?: string };
@@ -161,8 +163,14 @@ export function collectCursor(userDir: string = cursorUserDir()): { events: Usag
       let tools: string[] = [];
       let commands: string[] = [];
       let isError = false;
+      // Carry the latest user prompt forward to the turn-final assistant bubble
+      // that it triggered — that's the only bubble we emit an event for.
+      let lastUserText: string | undefined;
 
       for (const [bubbleId, bubble] of ordered) {
+        if (bubble.type === 1 && typeof bubble.text === 'string' && bubble.text.trim()) {
+          lastUserText = bubble.text.trim();
+        }
         const tf = bubble.toolFormerData;
         if (tf?.name) {
           tools.push(tf.name);
@@ -199,6 +207,7 @@ export function collectCursor(userDir: string = cursorUserDir()): { events: Usag
           commands,
           hasThinking: false,
           isError,
+          intentText: lastUserText || undefined,
         };
         ev.activity = classify(ev);
         events.push(ev);
