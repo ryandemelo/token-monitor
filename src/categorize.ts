@@ -17,7 +17,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 import { loadEvents, recordIntents, loadIntents } from './store.js';
-import type { StoredEvent } from './store.js';
+import type { StoredEvent, IntentRow } from './store.js';
 import { groupBy, parseTools } from './metrics.js';
 import { costOf } from './pricing.js';
 import { ADAPTERS } from './adapters/index.js';
@@ -124,7 +124,6 @@ export function runCategorize(
 ): CategorizeResult {
   const events = loadEvents(db, { days: opts.days, project: opts.project, source: opts.source });
   const days = opts.days ?? 30;
-  const minCluster = Math.max(2, opts.minCluster ?? 2);
 
   const aggs = [...groupBy(events, 'session_id').entries()].map(([id, evs]) => aggregateSession(id, evs));
   if (aggs.length === 0) {
@@ -150,6 +149,28 @@ export function runCategorize(
 
   // Cluster the FROZEN (first-wins) fingerprints, so display is idempotent.
   const frozen = loadIntents(db, aggs.map((a) => a.sessionId));
+  return buildResult(aggs, frozen, days, opts);
+}
+
+const byCostThenSessions = (a: CategoryRow, b: CategoryRow) =>
+  b.sessions - a.sessions ||
+  b.cost - a.cost ||
+  (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) ||
+  (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/**
+ * Cluster the frozen fingerprints into category rows and derive the
+ * duplicate-work / skill-candidate signals. Shared by `runCategorize` (after
+ * recording) and the read-only `categorizeSummary` (no recording), so both see
+ * identical clusters for the same window.
+ */
+function buildResult(
+  aggs: SessionAgg[],
+  frozen: Map<string, IntentRow>,
+  days: number,
+  opts: { threshold?: number; minCluster?: number },
+): CategorizeResult {
+  const minCluster = Math.max(2, opts.minCluster ?? 2);
   // Count from the frozen rows the categories are actually built from (not the
   // fresh re-derivation), so the header matches the per-row labels on re-runs.
   const textSessions = [...frozen.values()].filter((r) => r.has_text === 1).length;
@@ -175,12 +196,6 @@ export function runCategorize(
     return { id: c.id, name: c.name, sessions: members.length, projects, tokens, cost, estimated, hasText, duplicate };
   });
 
-  const byCostThenSessions = (a: CategoryRow, b: CategoryRow) =>
-    b.sessions - a.sessions ||
-    b.cost - a.cost ||
-    (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) ||
-    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-
   return {
     days,
     totalSessions: aggs.length,
@@ -189,4 +204,45 @@ export function runCategorize(
     duplicates: categories.filter((c) => c.duplicate).sort((a, b) => b.cost - a.cost || byCostThenSessions(a, b)),
     skillCandidates: categories.filter((c) => c.hasText && c.sessions >= minCluster).sort(byCostThenSessions),
   };
+}
+
+/** Cross-surface duplicate-work signal for `report`/`html` (see categorizeSummary). */
+export interface CategorizeSummary {
+  duplicateTasks: number;
+  duplicateSessions: number;
+  duplicateCost: number;
+  estimated: boolean;
+}
+
+/**
+ * Read-only duplicate-work signal for the shared `report`/`html` surfaces,
+ * derived from ALREADY-FROZEN intents only — no re-collection, no recording, no
+ * privacy surface beyond what `categorize` already persisted. Returns undefined
+ * when `categorize` has not run for this window, or found no cross-project
+ * duplicate work, so the callout only appears when there is something to say.
+ */
+export function categorizeSummary(
+  db: DatabaseSync,
+  opts: { days?: number; project?: string; source?: string; threshold?: number; minCluster?: number } = {},
+): CategorizeSummary | undefined {
+  const events = loadEvents(db, { days: opts.days, project: opts.project, source: opts.source });
+  if (events.length === 0) return undefined;
+  const aggs = [...groupBy(events, 'session_id').entries()].map(([id, evs]) => aggregateSession(id, evs));
+  const frozen = loadIntents(db, aggs.map((a) => a.sessionId));
+  if (frozen.size === 0) return undefined;
+  const { duplicates } = buildResult(aggs, frozen, opts.days ?? 30, opts);
+  if (duplicates.length === 0) return undefined;
+  return {
+    duplicateTasks: duplicates.length,
+    duplicateSessions: duplicates.reduce((s, c) => s + c.sessions, 0),
+    duplicateCost: duplicates.reduce((s, c) => s + c.cost, 0),
+    estimated: duplicates.some((c) => c.estimated),
+  };
+}
+
+/** Shared wording for the one-line duplicate-work callout in report/html. */
+export function fmtCategorizeSummary(s: CategorizeSummary): string {
+  const cost = (s.estimated ? '~' : '') + '$' + s.duplicateCost.toFixed(2);
+  const tasks = s.duplicateTasks === 1 ? '1 recurring task' : `${s.duplicateTasks} recurring tasks`;
+  return `${tasks} spanning ≥2 projects (${cost})`;
 }

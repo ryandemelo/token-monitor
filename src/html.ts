@@ -10,6 +10,8 @@ import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
+import type { CategorizeResult, CategoryRow, CategorizeSummary } from './categorize.js';
+import { fmtCategorizeSummary } from './categorize.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
   thinking: '#8b7ff5',
@@ -44,7 +46,7 @@ function stackedBar(m: Metrics): string {
 
 export function renderHtml(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[]; previousEvents?: StoredEvent[] },
+  opts: { days: number; follow?: FollowRow[]; previousEvents?: StoredEvent[]; categorize?: CategorizeSummary },
 ): string {
   const m = computeMetrics(events);
   const persona = assignPersona(m);
@@ -141,6 +143,7 @@ ${stackedBar(m)}
 <div class="legend">${legend}</div>
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
 <p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}</p>
+${opts.categorize ? `<p class="dup">🔁 ${esc(fmtCategorizeSummary(opts.categorize))} <span class="muted">— run <code>categorize</code> for detail</span></p>` : ''}
 
 <h2>Projects</h2>
 <table><tr><th>Project</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Persona</th></tr>${projRows}</table>
@@ -186,6 +189,8 @@ function pageShell(title: string, body: string): string {
   .save { color:#5dc98a; font-weight:600; white-space:nowrap; }
   .ev { font-size:.8rem; margin-top:.15rem; }
   .potential { margin:.5rem 0 .2rem; font-weight:600; color:#9fd45d; }
+  .dup { margin:.3rem 0; color:#e8c468; }
+  .dup code, td code { background:#252b37; border-radius:4px; padding:.05rem .3rem; }
   .st-resolved { color:#5dc98a; } .st-regressing { color:#e88f68; } .st-improving { color:#9fd45d; }
   footer { margin:2.5rem 0 1rem; font-size:.8rem; color:#717a8a; }
 </style></head><body>
@@ -239,5 +244,71 @@ export function renderTeamHtml(
   <div class="muted">${esc(persona.description)}</div>
   <ul class="recs">${recs.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
 </div>`,
+  );
+}
+
+/** Dashboard face of `categorize` — task clusters, duplicate work, skill candidates. */
+export function renderCategorizeHtml(r: CategorizeResult, days: number): string {
+  const title = `token-monitor — task categories (last ${days} days)`;
+  if (r.totalSessions === 0) {
+    return pageShell(
+      title,
+      `<h1>Task categories</h1>
+<p class="muted">No sessions in range. Run <code>token-monitor collect</code> first, or widen the window.</p>`,
+    );
+  }
+  const catCost = (c: CategoryRow): string => (c.estimated ? '~' : '') + '$' + c.cost.toFixed(2);
+
+  const cards = [
+    ['Sessions', String(r.totalSessions)],
+    ['From prompt text', String(r.textSessions)],
+    ['Categories', String(r.categories.length)],
+    ['Duplicate tasks', String(r.duplicates.length)],
+  ]
+    .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+    .join('');
+
+  const catRows = r.categories
+    .slice(0, 40)
+    .map(
+      (c) =>
+        `<tr><td>${c.duplicate ? '⚠ ' : ''}${esc(c.name)}${c.hasText ? '' : ' <span class="muted">(no text)</span>'}</td><td class="num">${c.sessions}</td><td class="num">${c.projects.length}</td><td class="num">${fmtTokens(c.tokens)}</td><td class="num">${catCost(c)}</td></tr>`,
+    )
+    .join('');
+
+  const dupSection = r.duplicates.length
+    ? `<h2>Duplicate work <span class="muted">— same task across ≥2 projects</span></h2>
+<table><tr><th>Task</th><th>Sessions</th><th>Projects</th><th>Where</th><th>Cost</th></tr>${r.duplicates
+        .slice(0, 20)
+        .map(
+          (c) =>
+            `<tr><td>⚠ ${esc(c.name)}</td><td class="num">${c.sessions}</td><td class="num">${c.projects.length}</td><td>${esc(c.projects.join(', '))}</td><td class="num">${catCost(c)}</td></tr>`,
+        )
+        .join('')}</table>
+<p class="muted">Recurring across projects → codify it as a shared skill/prompt instead of re-deriving it.</p>`
+    : `<h2>Duplicate work</h2>
+<p class="muted">No task repeated across multiple projects in this window.</p>`;
+
+  const skillSection = r.skillCandidates.length
+    ? `<h2>Org-skill candidates <span class="muted">— recurring tasks worth codifying</span></h2>
+<table><tr><th>Task</th><th>Sessions</th><th>Projects</th><th>Cost</th></tr>${r.skillCandidates
+        .slice(0, 20)
+        .map(
+          (c) =>
+            `<tr><td>${esc(c.name)}</td><td class="num">${c.sessions}</td><td class="num">${c.projects.length}</td><td class="num">${catCost(c)}</td></tr>`,
+        )
+        .join('')}</table>`
+    : '';
+
+  return pageShell(
+    title,
+    `<h1>Task categories <span class="muted">— last ${days} days · generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')}</span></h1>
+<div class="cards">${cards}</div>
+
+<h2>By category</h2>
+<table><tr><th>Category</th><th>Sessions</th><th>Projects</th><th>Tokens</th><th>Cost</th></tr>${catRows}</table>
+${dupSection}
+${skillSection}
+<p class="muted">Labels are derived on-device from redacted prompts; raw prompt text is never stored.</p>`,
   );
 }

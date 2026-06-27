@@ -224,12 +224,14 @@ Duplicate work (same task across ≥2 projects)
 
 It runs **fully offline and deterministic** — no agent, no network. Each session's prompt is reduced **on-device** to a handful of redacted keyword tokens (structured secrets — keys, URLs, paths, IPs, connection strings — are stripped first); raw prompt text is never stored, printed, or sent. `--threshold` (0–1, default 0.4) and `--min-cluster` (default 2) tune the clustering; bias toward false negatives, since a wrong "duplicate work" call costs more trust than a missed one.
 
+Intent text is read from Claude Code, Cursor, Copilot, Gemini CLI, and Codex sessions (Antigravity is token-only for now). `--html <path>` writes a self-contained task-category dashboard, and once you've run `categorize`, `report` and `html` surface a one-line duplicate-work callout (counts and cost only — never labels).
+
 ## CLI
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
 token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
-token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]
