@@ -7,8 +7,8 @@ import { costOf, PREMIUM_MODEL_RE } from './pricing.js';
 export const CACHE_TTL_MS = 5 * 60_000;
 /** Sessions need this many turns before a context-bloat trend is measurable. */
 export const BLOAT_MIN_TURNS = 8;
-const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
-const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
+export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
+export const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
 
 export interface Metrics {
   events: number;

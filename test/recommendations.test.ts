@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeMetrics } from '../src/metrics.js';
-import { blendedRates, enrichFindings, fmtSavings, fmtEvidence, potentialBill, fmtPotential, realizedMonthly, fmtUsdShort } from '../src/recommendations.js';
+import { blendedRates, enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, realizedMonthly, fmtUsdShort } from '../src/recommendations.js';
 import { makeStored } from './helpers.js';
 import type { StoredEvent } from '../src/store.js';
 import type { FollowRow } from '../src/followthrough.js';
@@ -113,6 +113,15 @@ test('personalized target: enough sessions -> own top quartile, message cites it
   // p75 of [0×8, 0.9×4] sits between the cold mass and the strong sessions
   assert.ok(rec.target!.value > 0.5 && rec.target!.value <= 0.9);
   assert.match(rec.message, /top-quartile sessions already run at/);
+});
+
+test('enrichFindings attaches the dominant cause; fmtCause renders it', () => {
+  const events = selfBenchmarkEvents(); // 12 single-turn cache-cold sessions
+  const m = computeMetrics(events);
+  const rec = enrichFindings(events, m, 30).find((r) => r.key === 'low-cache-hit')!;
+  assert.ok(rec.cause);
+  assert.equal(rec.cause!.dominant.key, 'short-sessions');
+  assert.match(fmtCause(rec)!, /^cause: sessions too short to build reusable cache \(\d+%\)$/);
 });
 
 test('personalized target: thin data falls back to the static target', () => {

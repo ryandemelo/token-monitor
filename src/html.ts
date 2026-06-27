@@ -8,7 +8,7 @@ import { fmtMetric } from './followthrough.js';
 import { fmtTokens } from './report.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
-import { enrichFindings, fmtSavings, fmtEvidence, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
+import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
@@ -53,8 +53,9 @@ export function renderHtml(
     ...persona.recommendations.map((r) => `<li>${esc(r)}</li>`),
     ...enriched.map((r) => {
       const savings = fmtSavings(r);
+      const cause = fmtCause(r);
       const ev = fmtEvidence(r);
-      return `<li>${esc(r.message)}${savings ? ` <span class="save">${esc(savings)}</span>` : ''}${ev ? `<div class="ev muted">${esc(ev)}</div>` : ''}</li>`;
+      return `<li>${esc(r.message)}${savings ? ` <span class="save">${esc(savings)}</span>` : ''}${cause ? `<div class="ev muted">${esc(cause)}</div>` : ''}${ev ? `<div class="ev muted">${esc(ev)}</div>` : ''}</li>`;
     }),
   ].join('');
   const projects = [...groupBy(events, 'project').entries()]

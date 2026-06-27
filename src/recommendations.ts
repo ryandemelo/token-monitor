@@ -5,6 +5,8 @@ import type { Finding, FollowRow, MetricKey } from './followthrough.js';
 import { structuredFindings, premiumShare, fmtMetric } from './followthrough.js';
 import { PRICES, PREMIUM_MODEL_RE } from './pricing.js';
 import { fmtTokens } from './report.js';
+import type { CauseBreakdown } from './causes.js';
+import { decomposeCause } from './causes.js';
 
 /**
  * Recommendations 2.0: every structured finding answers "why should I believe
@@ -33,6 +35,8 @@ export interface EnrichedRec extends Finding {
   savingsEstimated: boolean;
   /** The improvement target the savings assume; personal = user's own top quartile. */
   target?: Target;
+  /** The dominant cause behind the symptom, when decomposable (#41). */
+  cause?: CauseBreakdown;
 }
 
 /** Static fallback targets for the savings math, per finding key. */
@@ -279,6 +283,7 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
         message,
         evidence,
         target,
+        cause: decomposeCause(f.key, events),
         savingsUsdPerMonth: usd !== undefined && usd > 0 ? usd * monthly : undefined,
         savingsEstimated: rates.estimated,
       };
@@ -387,4 +392,11 @@ export function fmtEvidence(r: EnrichedRec): string | undefined {
   return 'worst: ' + r.evidence
     .map((e) => `${e.sessionId.slice(0, 8)} (${e.project}, ${e.date}, ${e.label})`)
     .join(' · ');
+}
+
+/** "cause: cold restarts after idle gaps (52%)" — the dominant driver, when known. */
+export function fmtCause(r: EnrichedRec): string | undefined {
+  if (!r.cause) return undefined;
+  const d = r.cause.dominant;
+  return `cause: ${d.label} (${(d.share * 100).toFixed(0)}%)`;
 }

@@ -8,7 +8,7 @@ import { mergeMetrics, rollupExports, dominantActivity, displayName } from './te
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import type { EnrichedRec } from './recommendations.js';
-import { enrichFindings, fmtSavings, fmtEvidence, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
+import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 
@@ -222,6 +222,8 @@ export function renderEnrichedRecs(recs: EnrichedRec[]): string[] {
   for (const r of recs) {
     const savings = fmtSavings(r);
     out.push(`  ${YELLOW}→${RESET} ${r.message}${savings ? `  ${GREEN}${savings}${RESET}` : ''}`);
+    const cause = fmtCause(r);
+    if (cause) out.push(`    ${DIM}${cause}${RESET}`);
     const ev = fmtEvidence(r);
     if (ev) out.push(`    ${DIM}${ev}${RESET}`);
   }
