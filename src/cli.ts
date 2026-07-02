@@ -2,7 +2,11 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { ADAPTERS } from './adapters/index.js';
-import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
+import {
+  openDb, insertEvents, loadEvents, DEFAULT_DB,
+  relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
+} from './store.js';
+import { resetProjectFamilyCache } from './project-family.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
 import { runCategorize, categorizeSummary } from './categorize.js';
 import { splitWindow } from './trends.js';
@@ -101,16 +105,36 @@ function buildSignedExportJson(
 }
 
 function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
+  // One memo lifetime per collect run: disk is re-read next run, so a
+  // deleted/recreated worktree converges on the next collect.
+  resetProjectFamilyCache();
+  let totalRelabeled = 0;
   for (const source of sources) {
     const { events, result } = ADAPTERS[source]();
     result.eventsInserted = insertEvents(db, events);
-    const note = result.note ? `  (${result.note})` : '';
+    // Collect IS the backfill: converge historical rows of every session this
+    // scan still sees onto the family-normalized project (see relabelEvents).
+    const sessions = new Map<string, string>();
+    for (const e of events) sessions.set(`${e.source}\x1f${e.sessionId}`, e.project);
+    result.eventsRelabeled = relabelEvents(db, sessions);
+    totalRelabeled += result.eventsRelabeled;
+    const notes = [
+      result.note,
+      result.eventsRelabeled > 0
+        ? `${result.eventsRelabeled} relabeled into project families; originals in project_raw`
+        : undefined,
+    ].filter(Boolean).join('; ');
     console.log(
       `${source.padEnd(12)} ${String(result.filesScanned).padStart(5)} files  ` +
         `${String(result.eventsFound).padStart(7)} turns  ` +
-        `${String(result.eventsInserted).padStart(7)} new${note}`,
+        `${String(result.eventsInserted).padStart(7)} new${notes ? `  (${notes})` : ''}`,
     );
   }
+  // User-asserted aliases fix rows whose logs rotated away (dead worktrees the
+  // resolver can never re-see); reversible via project_raw like any relabel.
+  const aliased = applyProjectAliases(db, loadProjectAliases());
+  if (aliased > 0) console.log(`aliases      ${String(aliased).padStart(31)} rows relabeled via project-aliases.json`);
+  if (totalRelabeled + aliased > 0) syncIntentProjects(db);
 }
 
 async function main() {
