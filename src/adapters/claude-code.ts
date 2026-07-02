@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
+import { familyOf, collapseSessionCwds } from '../project-family.js';
 
 const ROOT = join(homedir(), '.claude', 'projects');
 
@@ -95,6 +96,10 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
       // The most recent genuine user prompt, carried forward onto the assistant
       // turns it triggered (transient — used only by `categorize`).
       let lastUserText = '';
+      // Events buffered with their raw cwd: the project is assigned ONCE per
+      // session at end-of-file, so a session that cd-s into monorepo subdirs
+      // ("backend", "frontend") can't fragment into per-subdir pseudo-projects.
+      const fileEvents: Array<{ ev: UsageEvent; cwd?: string }> = [];
       for (const line of text.split('\n')) {
         if (!line.trim()) continue;
         let d: ClaudeLine;
@@ -146,7 +151,7 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
           source: 'claude-code',
           eventKey: d.uuid,
           sessionId: d.sessionId ?? file.replace('.jsonl', ''),
-          project: d.cwd ? basename(d.cwd) : dir,
+          project: '', // assigned per-session at end-of-file, see below
           timestamp: d.timestamp ?? new Date(0).toISOString(),
           model: d.message.model ?? 'unknown',
           inputTokens: u.input_tokens ?? 0,
@@ -162,8 +167,39 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
           intentText: lastUserText || undefined,
         };
         ev.activity = classify(ev);
-        events.push(ev);
+        fileEvents.push({ ev, cwd: d.cwd });
         for (const id of toolUseIds) byToolUseId.set(id, ev);
+      }
+
+      // One project per session. Precedence: (1) first cwd whose git root
+      // resolves on disk (follows worktree pointers to the main checkout);
+      // (2) descendant-adoption over the session's observed cwds (dead
+      // paths); (3) the log dir name when no event carried a cwd. A
+      // single-cwd no-git session stays byte-identical to the old
+      // basename(cwd) behavior via collapseSessionCwds.
+      const cwdsBySession = new Map<string, string[]>();
+      for (const { ev, cwd } of fileEvents) {
+        if (!cwd) continue;
+        let list = cwdsBySession.get(ev.sessionId);
+        if (!list) cwdsBySession.set(ev.sessionId, (list = []));
+        if (!list.includes(cwd)) list.push(cwd); // first-seen order
+      }
+      const projectBySession = new Map<string, string>();
+      for (const [sessionId, cwds] of cwdsBySession) {
+        let project: string | undefined;
+        for (const c of cwds) {
+          const f = familyOf(c);
+          if (f) {
+            project = f;
+            break;
+          }
+        }
+        if (!project) project = collapseSessionCwds(cwds).get(cwds[0]);
+        projectBySession.set(sessionId, project ?? dir);
+      }
+      for (const { ev } of fileEvents) {
+        ev.project = projectBySession.get(ev.sessionId) ?? dir;
+        events.push(ev);
       }
     }
   }

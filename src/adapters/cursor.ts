@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
+import { familyOf } from '../project-family.js';
 
 /**
  * Cursor stores composer (chat/agent) state in a SQLite key/value store:
@@ -75,7 +76,12 @@ function loadWorkspaceMap(userDir: string, scratch: string): Map<string, string>
     try {
       const ws = JSON.parse(readFileSync(join(wsRoot, dir, 'workspace.json'), 'utf8'));
       const folder = ws.folder ?? ws.workspace;
-      if (typeof folder === 'string') project = basename(decodeURIComponent(folder.replace(/^file:\/\//, '')));
+      if (typeof folder === 'string') {
+        // A worktree opened as an IDE workspace is the same fragmentation bug
+        // as a cd-ed subdir: resolve to the repo family, basename fallback.
+        const path = decodeURIComponent(folder.replace(/^file:\/\//, ''));
+        project = familyOf(path) ?? basename(path);
+      }
     } catch {
       continue;
     }
