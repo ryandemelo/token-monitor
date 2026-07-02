@@ -12,6 +12,7 @@ import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPo
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 import type { CategorizeResult, CategoryRow, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
+import type { MergedCategories, OrgCategory } from './team-categories.js';
 
 const ACTIVITY_COLORS: Record<string, string> = {
   thinking: '#8b7ff5',
@@ -199,11 +200,58 @@ ${body}
 </body></html>`;
 }
 
+/** Org-category cost with the shared ~ estimation marker. */
+const orgCost = (c: OrgCategory): string => (c.estimated ? '~' : '') + '$' + c.cost.toFixed(2);
+
+/**
+ * Cross-user duplicate work + org-skill sections for the team dashboard —
+ * HTML parity with renderTeamReport's terminal sections. Everything member-
+ * supplied flows through esc(): terms/names originate from redacted prompt
+ * keywords, but a hand-built export is still attacker-controlled input.
+ */
+function teamCategorySections(mc: MergedCategories | undefined, memberCount: number): string {
+  if (!mc || mc.withCategories === 0) {
+    return `\n<h2>Cross-user duplicate work</h2>
+<p class="muted">No task categories in these exports — members on ≥0.11 include them via <code>report --json</code> / <code>push</code>.</p>`;
+  }
+  const dupRows = mc.crossUserDuplicates
+    .slice(0, 10)
+    .map((c) => `<tr><td title="${esc(c.terms.join(' '))}">${esc(c.name)}</td><td>${esc(c.users.join(', '))}</td><td class="num">${c.sessions}</td><td class="num">${c.projects.length}</td><td class="num">${orgCost(c)}</td></tr>`)
+    .join('');
+  const skillRows = mc.orgSkillCandidates
+    .slice(0, 10)
+    .map((c) => `<tr><td title="${esc(c.terms.join(' '))}">${esc(c.name)}</td><td class="num">${c.userCount}</td><td class="num">${c.sessions}</td><td class="num">${orgCost(c)}</td><td class="num">${c.score}</td></tr>`)
+    .join('');
+  return `
+<h2>Cross-user duplicate work</h2>
+${
+  mc.crossUserDuplicates.length > 0
+    ? `<p class="dup">⚠ Same task done independently by ≥2 people — codify one org skill/prompt instead.</p>
+<table><tr><th>Task</th><th>Users</th><th>Sessions</th><th>Projects</th><th>Cost</th></tr>${dupRows}</table>${
+        mc.anyUnsigned
+          ? `\n<p class="muted">Unsigned exports are identified as user@host — one person on two machines can read as two people.</p>`
+          : ''
+      }`
+    : `<p class="muted">No cross-user duplicate work detected in member categories.</p>`
+}
+<h2>Org-skill candidates</h2>
+${
+  mc.orgSkillCandidates.length > 0
+    ? `<table><tr><th>Task</th><th>Users</th><th>Sessions</th><th>Cost</th><th>Score</th></tr>${skillRows}</table>`
+    : `<p class="muted">No recurring tasks worth codifying yet.</p>`
+}
+${
+  mc.withinMemberDupCost > 0
+    ? `<p class="muted">Within-member duplicate work: $${mc.withinMemberDupCost.toFixed(2)} across ${mc.withinMemberDupMembers} member(s) — each should run <code>categorize</code> locally.</p>\n`
+    : ''
+}<p class="muted">Task categories from ${mc.withCategories} of ${memberCount} export(s). Labels are redacted keyword terms derived on-device; raw prompt text never leaves a member's machine.</p>`;
+}
+
 /** Org dashboard for merged member exports — the HTML face of `merge`. */
 export function renderTeamHtml(
   exports: SignedExport[],
   config: TeamConfig,
-  opts: { by?: RollupAxis; keyring?: Record<string, string> } = {},
+  opts: { by?: RollupAxis; keyring?: Record<string, string>; categories?: MergedCategories } = {},
 ): string {
   const by = opts.by ?? 'discipline';
   const overall = mergeMetrics(exports.map((e) => e.overall));
@@ -212,6 +260,7 @@ export function renderTeamHtml(
   const recs = [...persona.recommendations, ...generalRecommendations(overall)];
   const members = new Set(exports.map((e) => displayName(e, opts.keyring)));
 
+  const crossDup = opts.categories?.crossUserDuplicates ?? [];
   const cards = [
     ['Members', String(members.size)],
     ['Sessions', String(overall.sessions)],
@@ -219,6 +268,9 @@ export function renderTeamHtml(
     ['Cache hit', pct(overall.cacheHitRatio)],
     ['Rework', pct(overall.reworkRatio)],
     ['Est. cost', cost(overall)],
+    ...(crossDup.length > 0
+      ? [['Cross-user dup', (crossDup.some((c) => c.estimated) ? '~' : '') + '$' + crossDup.reduce((s, c) => s + c.cost, 0).toFixed(2)]]
+      : []),
   ]
     .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
     .join('');
@@ -238,7 +290,7 @@ export function renderTeamHtml(
 
 <h2>By ${by}</h2>
 <table><tr><th>${axisLabel}</th><th>Members</th><th>Activity mix</th><th>Tokens</th><th>Cost</th><th>Cache</th><th>Rework</th><th>Think:code</th><th>Persona</th></tr>${rollupRows}</table>
-
+${teamCategorySections(opts.categories, exports.length)}
 <div class="persona">
   <h3>${persona.emoji} ${esc(persona.name)}</h3>
   <div class="muted">${esc(persona.description)}</div>
