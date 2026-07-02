@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, Source } from './types.js';
@@ -33,6 +33,19 @@ export function openDb(path: string = DEFAULT_DB): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
   `);
+  // Migrate dbs created before project-family relabeling: project_raw keeps
+  // the pre-relabel label so every relabel is auditable and reversible in one
+  // statement (UPDATE events SET project = project_raw WHERE project_raw IS
+  // NOT NULL). Mirrors the followthrough `origin` PRAGMA-guard precedent.
+  const cols = db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'project_raw')) {
+    try {
+      db.exec(`ALTER TABLE events ADD COLUMN project_raw TEXT`);
+    } catch {
+      // Read-only pre-0.11 DB: skip the migration so read paths still work;
+      // the column appears on the first writable open.
+    }
+  }
   return db;
 }
 
@@ -169,6 +182,109 @@ export function loadIntents(db: DatabaseSync, sessionIds: string[]): Map<string,
     if (row) out.set(row.session_id, row);
   }
   return out;
+}
+
+/**
+ * Re-attribute HISTORICAL rows to the projects the adapters resolve today.
+ * `collect` is the backfill: adapters now emit one family-normalized project
+ * per session, and this pass converges every stored row of every session
+ * whose log still exists onto that label — versionless and idempotent (the
+ * `project <> ?` guard makes steady-state collects free). `project_raw`
+ * preserves the first pre-relabel label for audit/revert.
+ *
+ * Keys are `source\x1fsessionId` (\x1f: neither appears in either part).
+ */
+export function relabelEvents(db: DatabaseSync, sessions: Map<string, string>): number {
+  const stmt = db.prepare(`
+    UPDATE events SET project_raw = COALESCE(project_raw, project), project = ?
+    WHERE source = ? AND session_id = ? AND project <> ?
+  `);
+  let changed = 0;
+  db.exec('BEGIN');
+  try {
+    for (const [key, project] of sessions) {
+      const i = key.indexOf('\x1f');
+      const res = stmt.run(project, key.slice(0, i), key.slice(i + 1), project);
+      changed += Number(res.changes);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return changed;
+}
+
+export const DEFAULT_ALIASES = join(homedir(), '.token-monitor', 'project-aliases.json');
+
+/**
+ * Optional user-maintained relabel map ({"quaestor-cl-iter-02": "quaestor"})
+ * for rows whose source logs rotated away before family resolution existed —
+ * the resolver can't fix what it can never re-see. Deliberately manual: an
+ * auto-learned alias table was rejected in design review as a
+ * silent-corruption vector. Missing/corrupt file reads as empty.
+ */
+export function loadProjectAliases(path: string = DEFAULT_ALIASES): Record<string, string> {
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8'));
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (typeof v === 'string' && v && k) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Apply alias relabels at collect time (same audit trail as relabelEvents). */
+export function applyProjectAliases(db: DatabaseSync, aliases: Record<string, string>): number {
+  const stmt = db.prepare(`
+    UPDATE events SET project_raw = COALESCE(project_raw, project), project = ?
+    WHERE project = ?
+  `);
+  let changed = 0;
+  db.exec('BEGIN');
+  try {
+    for (const [from, to] of Object.entries(aliases)) {
+      if (from === to) continue;
+      changed += Number(stmt.run(to, from).changes);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return changed;
+}
+
+/**
+ * Keep session_intents.project in step with relabeled events. The freeze
+ * contract is deliberately re-scoped, not broken: intent_id / label /
+ * fingerprint / has_text / first_seen stay first-wins frozen (they are the
+ * privacy and idempotency surface); `project` is signal-inert location
+ * metadata that categorize re-reads from events anyway — leaving it stale
+ * would just be a lie in the DB. Call only when a relabel actually changed
+ * rows; steady-state collects skip the scan entirely.
+ */
+export function syncIntentProjects(db: DatabaseSync): number {
+  ensureIntentsTable(db);
+  // Both subqueries are source-scoped: session ids are only unique WITHIN a
+  // source, and a cross-source id collision must not let one source's project
+  // overwrite (and endlessly re-trigger) another's intent row.
+  const res = db.prepare(`
+    UPDATE session_intents SET project =
+      (SELECT project FROM events e
+       WHERE e.session_id = session_intents.session_id
+         AND e.source = session_intents.source
+       ORDER BY ts LIMIT 1)
+    WHERE EXISTS (SELECT 1 FROM events e
+      WHERE e.session_id = session_intents.session_id
+        AND e.source = session_intents.source
+        AND e.project <> session_intents.project)
+  `).run();
+  return Number(res.changes);
 }
 
 export function loadEvents(

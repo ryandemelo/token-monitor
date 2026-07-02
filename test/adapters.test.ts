@@ -251,3 +251,55 @@ test('isDeclination matches harness rejection phrasings, not real errors', async
   assert.equal(isDeclination('<tool_use_error>InputValidationError: too_big</tool_use_error>'), false);
   assert.equal(isDeclination('Error: ENOENT no such file'), false);
 });
+
+// ---- project-family wiring (PR4) --------------------------------------------
+
+/** One assistant line with usage, minimal enough for the adapter to accept. */
+function claudeLine(uuid: string, sessionId: string, cwd: string): string {
+  return JSON.stringify({
+    type: 'assistant', uuid, sessionId, cwd, timestamp: '2026-06-01T10:00:00.000Z',
+    message: { model: 'claude-opus-4-7', usage: { input_tokens: 10, output_tokens: 10 }, content: [] },
+  });
+}
+
+test('claude-code: session cd-ing into monorepo subdirs keeps ONE project', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-family-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's1.jsonl'), [
+    claudeLine('u1', 's1', '/w/kevq/process'),
+    claudeLine('u2', 's1', '/w/kevq/process/backend'),
+    claudeLine('u3', 's1', '/w/kevq/process/frontend'),
+    claudeLine('u4', 's1', '/w/kevq/process/backend/db'),
+  ].join('\n'));
+
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 4);
+  for (const e of events) assert.equal(e.project, 'process'); // the exact kevq regression
+});
+
+test('claude-code: single-cwd session keeps old basename behavior', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-single-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's3.jsonl'), claudeLine('s31', 's3', '/gone/dev/proj-alpha'));
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].project, 'proj-alpha');
+});
+
+test('claude-code: two sessions in one dir label independently', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-two-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'sA.jsonl'), [
+    claudeLine('a1', 'sA', '/w/dev/repo-a'),
+    claudeLine('a2', 'sA', '/w/dev/repo-a/sub'),
+  ].join('\n'));
+  writeFileSync(join(dir, 'sB.jsonl'), claudeLine('b1', 'sB', '/w/dev/repo-b'));
+  const { events } = collectClaudeCode(base);
+  const byKey = new Map(events.map((e) => [e.eventKey, e.project]));
+  assert.equal(byKey.get('a1'), 'repo-a');
+  assert.equal(byKey.get('a2'), 'repo-a');
+  assert.equal(byKey.get('b1'), 'repo-b');
+});

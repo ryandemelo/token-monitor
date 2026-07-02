@@ -9,9 +9,40 @@ import { fingerprint } from './sign.js';
 import type { Signature } from './sign.js';
 
 /**
+ * One task category as it crosses the wire — the aggregate-only projection of
+ * a categorize cluster. `terms` are the ≤8 redacted keyword tokens from
+ * intent.ts (the ONLY text-derived artifact categorize ever persists); they
+ * are the cross-user match key at merge time. Deliberately not hashed:
+ * a dictionary-reversible hash would be false comfort, whereas readable terms
+ * keep the privacy surface auditable by the member shipping them.
+ */
+export interface ExportCategory {
+  /** fnv1a of sorted member session ids — stable, one-way. */
+  id: string;
+  /** ≤3-term redacted label (cluster name). */
+  name: string;
+  /** Cluster top terms, ≤8 — the cross-user match key. */
+  terms: string[];
+  sessions: number;
+  /** Canonical project basenames — same data class ExportV1.byProject ships. */
+  projects: string[];
+  tokens: number;
+  cost: number;
+  estimated: boolean;
+  /** Member-local same-user cross-≥2-projects flag, carried for display. */
+  duplicate: boolean;
+}
+
+/**
  * Mergeable per-developer export. Contains aggregate numbers only — no
  * prompts, no code, no file paths beyond project basenames — so it is safe
  * to share for a team rollup.
+ *
+ * `categories`/`categorizeDays` are ADDITIVE optional fields on version 1
+ * (the persona/recommendations precedent): a version bump would make every
+ * pre-0.11 lead reject every 0.11 member's scheduled push overnight, while
+ * unknown fields are ignored-but-signed by old binaries — full two-way
+ * compatibility with zero negotiation code.
  */
 export interface ExportV1 {
   version: 1;
@@ -21,6 +52,8 @@ export interface ExportV1 {
   days: number;
   overall: Metrics;
   byProject: Record<string, Metrics>;
+  categories?: ExportCategory[];
+  categorizeDays?: number;
 }
 
 export function buildExport(events: StoredEvent[], days: number): ExportV1 {

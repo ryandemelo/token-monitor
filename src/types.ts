@@ -56,5 +56,7 @@ export interface CollectResult {
   filesScanned: number;
   eventsFound: number;
   eventsInserted: number;
+  /** Historical rows re-attributed to project families by this collect. */
+  eventsRelabeled?: number;
   note?: string;
 }

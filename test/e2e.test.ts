@@ -491,3 +491,162 @@ test('e2e: unknown command and bare invocation fail with help', () => {
   assert.equal(bare.code, 1);
   assert.ok(bare.stdout.includes('Usage:'));
 });
+
+// ---- PR4 e2e: project families, category exports, cross-user merge ----------
+
+test('e2e: two-member category exports merge into cross-user duplicate work, leak-free and deterministic', () => {
+  const SECRET_KEY = 'sk-CANARYfeedface7654321';
+  const SECRET_EMAIL = 'leak2@secret.example';
+  const RAW_PHRASE = 'staging admin password is';
+
+  const memberHome = (name: string, project: string, prompt: string): string => {
+    const home = mkdtempSync(join(tmpdir(), `tm-e2e-${name}-`));
+    const dir = join(home, '.claude', 'projects', project);
+    mkdirSync(dir, { recursive: true });
+    const lines = [
+      { type: 'user', sessionId: 's1', timestamp: '2026-06-01T10:00:00.000Z', message: { content: [{ type: 'text', text: prompt }] } },
+      { type: 'assistant', uuid: `${name}-u1`, sessionId: 's1', cwd: `/Users/${name}/${project}`, timestamp: '2026-06-01T10:00:05.000Z',
+        message: { model: 'claude-opus-4-7', usage: { input_tokens: 500, output_tokens: 300 }, content: [{ type: 'tool_use', id: `${name}-t1`, name: 'Edit', input: {} }] } },
+    ];
+    writeFileSync(join(dir, 's1.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    assert.equal(run(['collect', '--source', 'claude-code'], { home }).code, 0);
+    return home;
+  };
+
+  const homeA = memberHome('alice', 'proj-pay-a',
+    `Add payment retry with exponential backoff to the billing worker. The ${RAW_PHRASE} ${SECRET_KEY}, contact ${SECRET_EMAIL}`);
+  const homeB = memberHome('bob', 'proj-pay-b',
+    'Implement payment retry and exponential backoff in the billing worker queue');
+
+  // Exports carry categories (signed, labels only); canaries must not cross the wire.
+  const exA = run(['report', '--json', ...DAYS], { home: homeA }).stdout;
+  const exB = run(['report', '--json', ...DAYS], { home: homeB }).stdout;
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!exA.includes(leak), `export leaked "${leak}"`);
+  }
+  const parsedA = JSON.parse(exA);
+  assert.equal(parsedA.version, 1, 'wire version must stay 1 (additive fields)');
+  assert.ok(Array.isArray(parsedA.categories) && parsedA.categories.length >= 1, 'export missing categories');
+  assert.ok(!('categories' in JSON.parse(run(['report', '--json', '--no-categories', ...DAYS], { home: homeA }).stdout)),
+    '--no-categories must omit the key entirely');
+  // No raw text classes in the category rows: allowlisted keys only.
+  for (const c of parsedA.categories) {
+    assert.deepEqual(Object.keys(c).sort(), ['cost', 'duplicate', 'estimated', 'id', 'name', 'projects', 'sessions', 'terms', 'tokens']);
+  }
+
+  const mergeHome = mkdtempSync(join(tmpdir(), 'tm-e2e-merge-'));
+  const fA = join(mergeHome, 'a.json'), fB = join(mergeHome, 'b.json');
+  writeFileSync(fA, exA);
+  writeFileSync(fB, exB);
+
+  const merged = run(['merge', fA, fB], { home: mergeHome });
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(merged.stdout.includes('Cross-user duplicate work'), 'missing cross-user section');
+  assert.match(merged.stdout, /done independently by ≥2 people/, 'missing cross-user headline');
+  assert.ok(merged.stdout.includes('Org-skill candidates (team-wide)'), 'missing org-skill section');
+  assert.ok(merged.stdout.includes('task categories from 2 of 2 export(s)'), 'missing coverage footer');
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!merged.stdout.includes(leak), `merge stdout leaked "${leak}"`);
+  }
+
+  // Deterministic: same inputs, byte-identical stdout.
+  assert.equal(run(['merge', fA, fB], { home: mergeHome }).stdout, merged.stdout);
+
+  // --json exposes the machine-readable tiers.
+  const mj = JSON.parse(run(['merge', fA, fB, '--json'], { home: mergeHome }).stdout);
+  assert.ok(mj.crossUserDuplicates.length >= 1, 'expected a cross-user duplicate');
+  assert.ok(mj.crossUserDuplicates[0].userCount >= 2);
+  assert.deepEqual(mj.categoryCoverage, { withCategories: 2, total: 2 });
+
+  // --html renders the sections, escaped and leak-free.
+  const htmlPath = join(mergeHome, 'team.html');
+  assert.equal(run(['merge', fA, fB, '--html', htmlPath], { home: mergeHome }).code, 0);
+  const html = readFileSync(htmlPath, 'utf8');
+  assert.ok(html.includes('Cross-user duplicate work'));
+  assert.ok(html.includes('Org-skill candidates'));
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!html.includes(leak), `merge --html leaked "${leak}"`);
+  }
+
+  // Raw sqlite bytes (incl. project_raw) never hold the canaries either.
+  const dbBytes = readFileSync(join(homeA, '.token-monitor', 'token-monitor.sqlite')).toString('latin1');
+  for (const leak of [SECRET_KEY, SECRET_EMAIL, 'CANARY', RAW_PHRASE]) {
+    assert.ok(!dbBytes.includes(leak), `db leaked "${leak}"`);
+  }
+
+  // Pre-0.11 mix: stripping categories from one export downgrades gracefully.
+  const legacy = JSON.parse(exB);
+  delete legacy.categories;
+  delete legacy.categorizeDays;
+  delete legacy.sig; // edited payload can't stay signed
+  writeFileSync(fB, JSON.stringify(legacy));
+  const mixed = run(['merge', fA, fB, '--json'], { home: mergeHome });
+  assert.equal(mixed.code, 0, mixed.stderr);
+  const mixedJson = JSON.parse(mixed.stdout);
+  assert.deepEqual(mixedJson.categoryCoverage, { withCategories: 1, total: 2 });
+  assert.equal(mixedJson.crossUserDuplicates.length, 0);
+});
+
+test('e2e: collect relabels fragmented historical rows into project families once', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'tm-e2e-relabel-'));
+  const dbPath = join(home, '.token-monitor', 'token-monitor.sqlite');
+
+  // Seed the DB with pre-0.11 fragmented rows for a session whose transcript
+  // still exists: same session split across "process" and "backend".
+  const { openDb: open, insertEvents: insert } = await import('../src/store.js');
+  const { makeEvent } = await import('./helpers.js');
+  const db = open(dbPath);
+  insert(db, [
+    makeEvent({ eventKey: 'frag-u1', sessionId: 'sfrag', project: 'process', timestamp: '2026-06-01T10:00:05.000Z' }),
+    makeEvent({ eventKey: 'frag-u2', sessionId: 'sfrag', project: 'backend', timestamp: '2026-06-01T10:00:06.000Z' }),
+  ]);
+  db.close();
+
+  // The transcript the adapter re-reads: both events, cwds root + subdir (dead
+  // paths → descendant adoption → both resolve to "process").
+  const dir = join(home, '.claude', 'projects', 'enc');
+  mkdirSync(dir, { recursive: true });
+  const mkLine = (uuid: string, cwd: string) => JSON.stringify({
+    type: 'assistant', uuid, sessionId: 'sfrag', cwd, timestamp: '2026-06-01T10:00:05.000Z',
+    message: { model: 'claude-opus-4-7', usage: { input_tokens: 10, output_tokens: 10 }, content: [] },
+  });
+  writeFileSync(join(dir, 'sfrag.jsonl'),
+    mkLine('frag-u1', '/gone/kevq/process') + '\n' + mkLine('frag-u2', '/gone/kevq/process/backend') + '\n');
+
+  const first = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(first.code, 0);
+  assert.match(first.stdout, /1 relabeled into project families/, 'expected the relabel note');
+
+  const db2 = open(dbPath);
+  const rows = db2.prepare(`SELECT event_key, project, project_raw FROM events ORDER BY event_key`).all() as
+    Array<{ event_key: string; project: string; project_raw: string | null }>;
+  assert.deepEqual(rows.map((r) => r.project), ['process', 'process']);
+  assert.deepEqual(rows.map((r) => r.project_raw), [null, 'backend']); // only the changed row is audited
+  db2.close();
+
+  // Steady state: the note disappears, nothing relabels again.
+  const second = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(second.code, 0);
+  assert.ok(!second.stdout.includes('relabeled into project families'), 'relabel must be idempotent');
+});
+
+test('e2e: an alias for a live project reaches steady state (no relabel flip-flop)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tm-e2e-alias-'));
+  const dir = join(home, '.claude', 'projects', 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'wt.jsonl'), JSON.stringify({
+    type: 'assistant', uuid: 'wt-u1', sessionId: 'swt', cwd: '/w/dev/myapp-wt1', timestamp: '2026-06-01T10:00:00.000Z',
+    message: { model: 'claude-opus-4-7', usage: { input_tokens: 10, output_tokens: 10 }, content: [] },
+  }) + '\n');
+  mkdirSync(join(home, '.token-monitor'), { recursive: true });
+  writeFileSync(join(home, '.token-monitor', 'project-aliases.json'), JSON.stringify({ 'myapp-wt1': 'myapp' }));
+
+  const first = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(first.code, 0);
+  const second = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(second.code, 0);
+  assert.ok(!second.stdout.includes('relabeled'), `second collect must be silent, got: ${second.stdout}`);
+  const third = run(['report', '--json', '--no-categories', ...DAYS], { home });
+  assert.ok(third.stdout.includes('"myapp"'), 'aliased project must appear in the export');
+  assert.ok(!JSON.parse(third.stdout).byProject['myapp-wt1'], 'raw worktree label must be gone');
+});
