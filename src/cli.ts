@@ -30,14 +30,15 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
-  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
-                        [--verify] [--keys keys.json] [--json] [--html team.html]
+                        [--verify] [--keys keys.json] [--threshold <0-1>]
+                        [--min-cluster <n>] [--json] [--html team.html]
   token-monitor init    --from <url-or-path>
-  token-monitor push    [--db <path>]
+  token-monitor push    [--no-categories] [--db <path>]
   token-monitor schedule [--hours <n>] [--remove]
   token-monitor reconcile [--provider anthropic|openai] [--days <n>] [--db <path>]
   token-monitor fingerprint [--db <path>]
@@ -54,10 +55,16 @@ Commands:
             --track to record those recommendations and measure (via
             follow-through) whether they actually moved their metric
   html      Self-contained HTML dashboard (no server, no external assets)
-  merge     Combine member exports (report --json > me.json) into a team report
+  merge     Combine member exports (report --json > me.json) into a team
+            report; clusters member task categories to flag the same task done
+            independently by ≥2 people and rank org-skill candidates (labels
+            only — no prompts ever cross the wire)
   init      Join a team: fetch the lead's config, set up keys, first collect,
             and (if configured) install the collection schedule
-  push      Sign and deliver an export to the team destination from config
+  push      Sign and deliver an export to the team destination from config.
+            Exports carry aggregate task categories (redacted keyword labels,
+            counts, $ — building them records session intents first-wins);
+            omit with --no-categories
   schedule  Install/remove a recurring collect+push job (launchd/cron)
   reconcile Cross-check local totals against the provider's usage API (org
             lead only — needs ANTHROPIC_ADMIN_KEY or OPENAI_ADMIN_KEY in the
@@ -80,7 +87,15 @@ Options:
               (\`platform:\` header, indented members), or JSON
   --by        merge rollup axis: team or discipline (default: discipline)
   --html      write an HTML dashboard to this path (merge: team rollup; categorize: task categories)
+  --no-categories  omit task categories from report --json / push exports
   --db        SQLite path (default: ${DEFAULT_DB})
+
+Project families:
+  collect resolves each session's directory to its git repo root (following
+  worktree checkouts back to the main repo), so monorepo subdirs and worktrees
+  count as ONE project. Historical rows are relabeled on collect; originals
+  stay in the project_raw column. Rows whose logs rotated away can be fixed
+  manually via ~/.token-monitor/project-aliases.json ({"old-name": "repo"}).
 `;
 
 function buildSignedExportJson(

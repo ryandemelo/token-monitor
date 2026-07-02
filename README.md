@@ -226,15 +226,44 @@ It runs **fully offline and deterministic** — no agent, no network. Each sessi
 
 Intent text is read from Claude Code, Cursor, Copilot, Gemini CLI, and Codex sessions (Antigravity is token-only for now). `--html <path>` writes a self-contained task-category dashboard, and once you've run `categorize`, `report` and `html` surface a one-line duplicate-work callout (counts and cost only — never labels).
 
+### Project families
+
+A monorepo session that `cd`-s into `backend/` or a git worktree opened as its own directory used to fragment one repo into several "projects" — inflating the project table and letting duplicate-work detection accuse the *same* repo of cross-project repetition. `collect` now resolves each session's directory to its **git repo root** (following a worktree's `.git`-file pointer back to the main checkout; falling back to within-session path grouping when directories no longer exist), so worktrees and subdirectories fold into one project.
+
+The first 0.11 collect relabels historical rows in one pass — you'll see `(N relabeled into project families; originals in project_raw)` once, and per-project trend rows may visibly merge. The pre-relabel name of every changed row is kept in the `project_raw` column (`UPDATE events SET project = project_raw WHERE project_raw IS NOT NULL` reverts). Rows whose source logs already rotated away can't be re-resolved; map those manually in `~/.token-monitor/project-aliases.json`:
+
+```json
+{ "quaestor-cl-iter-02": "quaestor", "old-worktree-name": "repo" }
+```
+
+### Cross-user duplicate work and org skills (lead)
+
+Member exports (`report --json` / `push`) carry each person's task categories — **labels only**: at most 8 redacted keyword terms plus counts and cost per category, capped at the 40 largest, only for sessions with real prompt text. `merge` re-clusters those categories **across people** and reports the same task done independently by two or more members, plus org-skill candidates ranked by `sessions × users`:
+
+```
+Cross-user duplicate work (same task, ≥2 people)
+  $84.00 spent on tasks done independently by ≥2 people (1 task)
+
+  ⚠ payment retry backoff — 5 session(s) by alice, bob across 2 project(s)  $84.00
+
+  Same task, different people → codify one org skill/prompt instead of re-deriving it per person.
+
+Org-skill candidates (team-wide)
+  Task                   Users  Sessions  Cost    Score
+  payment retry backoff  2      5         $84.00  10
+```
+
+`merge` honors the same `--threshold` / `--min-cluster` knobs as `categorize`. Members can opt out entirely with `report --json --no-categories` / `push --no-categories`. Unsigned exports are identified as `user@host` and flagged `(unsigned)` — one person on two machines can read as two people, so sign exports before acting on a cross-user finding.
+
 ## CLI
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
-token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
+token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
 token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
-token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--json] [--html team.html]
+token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--threshold 0.4] [--min-cluster 2] [--json] [--html team.html]
 token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
 ```
 
@@ -254,6 +283,8 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] Org-level cross-check via provider usage APIs: `reconcile`
 - [x] npm publish: `npx @ryandemelo/token-monitor`
 - [x] Task categorization: cluster sessions by intent, flag cross-project duplicate work, suggest org skills (`categorize`, on-device)
+- [x] Project families: worktrees + monorepo subdirs fold into one project (git-root resolution, `project_raw` audit trail)
+- [x] Cross-user duplicate work: aggregate-only category exports, `merge` clusters tasks across people and ranks org-skill candidates
 
 ## Integrity & threat model
 
@@ -288,6 +319,8 @@ Per model it shows local tokens, org-billed tokens, and a coverage %. The local 
 Everything stays on your machine. token-monitor reads log files locally, stores aggregate numbers in a local SQLite file, and never makes a network request. The core report stores only token counts, tool names, timestamps, and project/branch names — never prompt or code content.
 
 `categorize` is the one command that looks at prompt text, and it does so **entirely on-device**: each session is reduced to at most 8 redacted keyword tokens before anything is written. Structured secrets of known shape (emails, API keys, URLs, file paths, IPs, UUIDs, connection strings, PEM blocks, `key=value` secrets) are stripped first, and key/hash-shaped survivors are dropped — so the database stores keyword *labels*, never sentences. This is defence-in-depth, not a guarantee: a secret that looks exactly like an ordinary word can still survive, which is why only labels (never raw prose) are ever kept.
+
+**What's in a team export** (`report --json` / `push`), field by field: token/cost aggregates, activity shares, per-project metrics keyed by project basename, persona + recommendation strings, and — new in 0.11 — task categories: `{id, name, terms (≤8 redacted keywords), sessions, projects, tokens, cost, estimated, duplicate}`. No prompts, no code, no paths, no session text, and `--no-categories` drops the category block entirely. The terms are deliberately *not* hashed: a dictionary of common dev words would reverse such hashes trivially, so hashing would only obscure the surface from the member shipping it — readable terms keep it auditable.
 
 The one network exception is opt-in: `analyze --llm` sends aggregates to your own agent CLI's provider for analysis. Everything else — `categorize` included — is fully offline.
 
