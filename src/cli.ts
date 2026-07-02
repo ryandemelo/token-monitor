@@ -10,6 +10,7 @@ import { resetProjectFamilyCache } from './project-family.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
+import { mergeCategories } from './team-categories.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
@@ -124,6 +125,24 @@ function buildSignedExportJson(
   return JSON.stringify(signed, null, 2);
 }
 
+/** Shared --threshold / --min-cluster validation (categorize and merge cluster with the same knobs). */
+function parseClusterOpts(values: { threshold?: string; 'min-cluster'?: string }): {
+  threshold?: number;
+  minCluster?: number;
+} {
+  const threshold = values.threshold !== undefined ? Number(values.threshold) : undefined;
+  if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
+    console.error(`--threshold must be a number between 0 and 1, got "${values.threshold}"`);
+    process.exit(1);
+  }
+  const minCluster = values['min-cluster'] !== undefined ? Number(values['min-cluster']) : undefined;
+  if (minCluster !== undefined && (!Number.isInteger(minCluster) || minCluster < 2)) {
+    console.error(`--min-cluster must be an integer ≥ 2, got "${values['min-cluster']}"`);
+    process.exit(1);
+  }
+  return { threshold, minCluster };
+}
+
 function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
   // One memo lifetime per collect run: disk is re-read next run, so a
   // deleted/recreated worktree converges on the next collect.
@@ -231,6 +250,11 @@ async function main() {
       console.error(`⊘ skipped stale export from ${displayName(d, keyring)} (${identityOf(d)}, generated ${d.generatedAt}) — newer one present`);
     }
     const team = values.team ? parseTeamConfig(values.team) : {};
+    // Cluster member task categories across people (labels only — see
+    // team-categories.ts). Runs after dedupe so a stale double-push can't
+    // read as two people.
+    const { threshold, minCluster } = parseClusterOpts(values);
+    const categories = mergeCategories(exports, { threshold, minCluster, keyring });
     if (values.json) {
       const overall = mergeMetrics(exports.map((e) => e.overall));
       console.log(JSON.stringify({
@@ -239,12 +263,16 @@ async function main() {
         rollups: rollupExports(exports, team, by, keyring),
         overall,
         persona: assignPersona(overall),
+        categories: categories.categories,
+        crossUserDuplicates: categories.crossUserDuplicates,
+        orgSkillCandidates: categories.orgSkillCandidates,
+        categoryCoverage: { withCategories: categories.withCategories, total: exports.length },
       }, null, 2));
     } else {
-      console.log(renderTeamReport(exports, team, { by, keyring }));
+      console.log(renderTeamReport(exports, team, { by, keyring, categories }));
     }
     if (values.html) {
-      writeFileSync(values.html, renderTeamHtml(exports, team, { by, keyring }));
+      writeFileSync(values.html, renderTeamHtml(exports, team, { by, keyring, categories }));
       console.error(`Wrote ${values.html} (${exports.length} export(s)).`);
     }
     return;
@@ -343,16 +371,7 @@ Signing fingerprint (send to your team lead for keys.json):
       console.error(`--days must be a positive integer, got "${values.days}"`);
       process.exit(1);
     }
-    const threshold = values.threshold !== undefined ? Number(values.threshold) : undefined;
-    if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
-      console.error(`--threshold must be a number between 0 and 1, got "${values.threshold}"`);
-      process.exit(1);
-    }
-    const minCluster = values['min-cluster'] !== undefined ? Number(values['min-cluster']) : undefined;
-    if (minCluster !== undefined && (!Number.isInteger(minCluster) || minCluster < 2)) {
-      console.error(`--min-cluster must be an integer ≥ 2, got "${values['min-cluster']}"`);
-      process.exit(1);
-    }
+    const { threshold, minCluster } = parseClusterOpts(values);
     const result = runCategorize(db, {
       days,
       project: values.project,

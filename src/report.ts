@@ -13,6 +13,7 @@ import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
+import type { MergedCategories, OrgCategory } from './team-categories.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -297,10 +298,71 @@ export function renderEnrichedRecs(recs: EnrichedRec[]): string[] {
   return out;
 }
 
+const catCost = (c: OrgCategory): string => (c.estimated ? '~' : '') + '$' + c.cost.toFixed(2);
+
+/**
+ * Cross-user duplicate work + org-skill candidates for the team report.
+ * Three duplicate tiers stay visually distinct — member-local cross-project
+ * (carried flag), cross-user (the headline), and skill candidates — because
+ * they are different accusations with different remedies.
+ */
+function renderTeamCategoryLines(mc: MergedCategories, memberCount: number): string[] {
+  const out: string[] = [];
+  if (mc.withCategories === 0) {
+    out.push(
+      `  ${DIM}No task categories in these exports — members on ≥0.11 include them via report --json / push.${RESET}`,
+    );
+    return out;
+  }
+
+  out.push(section('Cross-user duplicate work (same task, ≥2 people)'));
+  if (mc.crossUserDuplicates.length > 0) {
+    const dupCost = mc.crossUserDuplicates.reduce((s, c) => s + c.cost, 0);
+    const est = mc.crossUserDuplicates.some((c) => c.estimated) ? '~' : '';
+    const tasks = mc.crossUserDuplicates.length === 1 ? '1 task' : `${mc.crossUserDuplicates.length} tasks`;
+    out.push(`  ${BOLD}${est}$${dupCost.toFixed(2)} spent on tasks done independently by ≥2 people (${tasks})${RESET}\n`);
+    for (const c of mc.crossUserDuplicates.slice(0, 10)) {
+      out.push(
+        `  ${YELLOW}⚠${RESET} ${BOLD}${c.name}${RESET} — ${c.sessions} session(s) by ${c.users.join(', ')}` +
+          ` across ${c.projects.length} project(s)  ${GREEN}${catCost(c)}${RESET}`,
+      );
+    }
+    out.push(`\n  ${DIM}Same task, different people → codify one org skill/prompt instead of re-deriving it per person.${RESET}`);
+    if (mc.anyUnsigned) {
+      out.push(`  ${DIM}Unsigned exports are identified as user@host — one person on two machines can read as two people.${RESET}`);
+    }
+  } else {
+    out.push(`  ${DIM}No cross-user duplicate work detected in member categories.${RESET}`);
+  }
+
+  if (mc.orgSkillCandidates.length > 0) {
+    out.push(section('Org-skill candidates (team-wide)'));
+    out.push(
+      table(
+        ['Task', 'Users', 'Sessions', 'Cost', 'Score'],
+        mc.orgSkillCandidates.slice(0, 10).map((c) => [
+          c.name, String(c.userCount), String(c.sessions), catCost(c), String(c.score),
+        ]),
+      ),
+    );
+  }
+
+  if (mc.withinMemberDupCost > 0) {
+    out.push(
+      `  ${DIM}within-member duplicate work: $${mc.withinMemberDupCost.toFixed(2)} across ${mc.withinMemberDupMembers} member(s) — each should run categorize locally.${RESET}`,
+    );
+  }
+  out.push(`  ${DIM}task categories from ${mc.withCategories} of ${memberCount} export(s)${RESET}`);
+  out.push(
+    `  ${DIM}Category labels are redacted keyword terms derived on-device; raw prompt text never leaves a member's machine.${RESET}`,
+  );
+  return out;
+}
+
 export function renderTeamReport(
   exports: SignedExport[],
   config: TeamConfig,
-  opts: { by?: RollupAxis; keyring?: Record<string, string> } = {},
+  opts: { by?: RollupAxis; keyring?: Record<string, string>; categories?: MergedCategories } = {},
 ): string {
   const by = opts.by ?? 'discipline';
   const axisLabel = by === 'team' ? 'Team' : 'Discipline';
@@ -352,6 +414,8 @@ export function renderTeamReport(
       out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);
     }
   }
+
+  if (opts.categories) out.push(...renderTeamCategoryLines(opts.categories, exports.length));
 
   const persona = assignPersona(overall);
   out.push(section(`Team persona: ${persona.emoji} ${persona.name}`));

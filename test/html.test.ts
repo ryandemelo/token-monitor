@@ -92,3 +92,42 @@ test('renderHtml marks LLM-origin follow-through rows with a robot', () => {
   assert.ok(html.includes('🤖'));
   assert.ok(html.includes('llm:cacheHitRatio'));
 });
+
+// ---- team dashboard cross-user sections (PR4) --------------------------------
+
+import { renderTeamHtml } from '../src/html.js';
+import { mergeCategories } from '../src/team-categories.js';
+import type { ExportV1, ExportCategory, SignedExport } from '../src/team.js';
+import { computeMetrics } from '../src/metrics.js';
+
+const teamExport = (user: string, categories?: ExportCategory[]): SignedExport => ({
+  version: 1, user, host: 'h', generatedAt: '2026-06-01T00:00:00.000Z', days: 30,
+  overall: computeMetrics([makeStored({ session_id: `${user}-s` })]),
+  byProject: {},
+  ...(categories ? { categories, categorizeDays: 30 } : {}),
+} as ExportV1);
+
+test('renderTeamHtml renders cross-user sections, card, and escapes hostile terms', () => {
+  const hostile: ExportCategory = {
+    id: 'x1', name: '<script>alert(1)</script>', terms: ['<script>alert(1)</script>', 'retry'],
+    sessions: 2, projects: ['<img src=x onerror=alert(2)>'], tokens: 100, cost: 9,
+    estimated: false, duplicate: false,
+  };
+  const twin: ExportCategory = { ...hostile, id: 'x2' };
+  const exports = [teamExport('alice', [hostile]), teamExport('bob', [twin])];
+  const html = renderTeamHtml(exports, {}, { categories: mergeCategories(exports) });
+
+  assert.ok(html.includes('Cross-user duplicate work'));
+  assert.ok(html.includes('Org-skill candidates'));
+  assert.ok(html.includes('Cross-user dup')); // headline card
+  assert.ok(!html.includes('<script>alert(1)</script>')); // esc()'d
+  assert.ok(html.includes('&#60;script&#62;'));
+  assert.ok(html.includes('(unsigned)'));
+});
+
+test('renderTeamHtml shows the upgrade hint when no export carries categories', () => {
+  const exports = [teamExport('old1'), teamExport('old2')];
+  const html = renderTeamHtml(exports, {}, { categories: mergeCategories(exports) });
+  assert.ok(html.includes('No task categories in these exports'));
+  assert.ok(!html.includes('Org-skill candidates</h2>')); // sections replaced by the hint
+});
