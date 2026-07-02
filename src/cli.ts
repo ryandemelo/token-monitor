@@ -8,7 +8,8 @@ import {
 } from './store.js';
 import { resetProjectFamilyCache } from './project-family.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
-import { runCategorize, categorizeSummary } from './categorize.js';
+import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
+import type { ExportCategory } from './team.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
@@ -86,13 +87,32 @@ function buildSignedExportJson(
   days: number,
   dbPath?: string,
   filters: { project?: string; source?: string } = {},
+  opts: { noCategories?: boolean } = {},
 ): string {
   const events = loadEvents(db, { days, ...filters });
   const ex = buildExport(events, days);
   const persona = assignPersona(ex.overall);
+  // Task categories ride along (labels only — see exportCategories) so a
+  // lead's merge can cluster tasks across people without members remembering
+  // to run categorize. runCategorize's first-wins intent recording is a
+  // deliberate, idempotent side effect: scheduled pushes self-refresh
+  // coverage. Any adapter-scan failure just omits the fields — an export or
+  // push must never break on one malformed local log.
+  let categoryFields: { categories?: ExportCategory[]; categorizeDays?: number } = {};
+  if (!opts.noCategories) {
+    try {
+      categoryFields = {
+        categories: exportCategories(runCategorize(db, { days, ...filters })),
+        categorizeDays: days,
+      };
+    } catch {
+      /* additive fields — omit on failure */
+    }
+  }
   const signed = signObject(
     {
       ...ex,
+      ...categoryFields,
       persona,
       recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)],
       // Evidence is aggregate-only by construction: session ids, dates, token
@@ -145,6 +165,7 @@ async function main() {
       days: { type: 'string', default: '30' },
       project: { type: 'string' },
       json: { type: 'boolean', default: false },
+      'no-categories': { type: 'boolean', default: false },
       trend: { type: 'boolean', default: false },
       team: { type: 'string' },
       out: { type: 'string', default: 'report.html' },
@@ -271,7 +292,10 @@ Signing fingerprint (send to your team lead for keys.json):
   } else if (cmd === 'push') {
     const config = loadConfig(keyDirFor(values.db) ?? DEFAULT_KEY_DIR);
     const days = Number(values.days) || config.windowDays || 30;
-    const where = await pushExport(buildSignedExportJson(db, days, values.db), config);
+    const where = await pushExport(
+      buildSignedExportJson(db, days, values.db, {}, { noCategories: values['no-categories'] }),
+      config,
+    );
     console.log(`Export (last ${days} days, signed) — ${where}`);
   } else if (cmd === 'schedule') {
     if (values.remove) {
@@ -291,7 +315,7 @@ Signing fingerprint (send to your team lead for keys.json):
     const days = Number(values.days) || 30;
     const filters = { project: values.project, source: values.source };
     if (values.json) {
-      console.log(buildSignedExportJson(db, days, values.db, filters));
+      console.log(buildSignedExportJson(db, days, values.db, filters, { noCategories: values['no-categories'] }));
     } else {
       // With --trend, load both windows in one query and partition, so the
       // current slice and the comparison share the same boundary.

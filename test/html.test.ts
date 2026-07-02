@@ -44,7 +44,7 @@ test('renderHtml surfaces the duplicate-work line only when a categorize summary
 });
 
 const catRow = (p: Partial<CategoryRow>): CategoryRow => ({
-  id: 'c', name: 'task', sessions: 1, projects: ['proj'], tokens: 1000, cost: 1, estimated: false, hasText: true, duplicate: false, ...p,
+  id: 'c', name: 'task', terms: ['task'], sessions: 1, projects: ['proj'], tokens: 1000, cost: 1, estimated: false, hasText: true, duplicate: false, ...p,
 });
 
 test('renderCategorizeHtml renders categories, duplicate work, and skill candidates', () => {

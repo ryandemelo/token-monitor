@@ -149,3 +149,60 @@ test('dedupeExports keeps only the newest export per identity', () => {
   assert.deepEqual(r.kept, [u2]);
   assert.deepEqual(r.dropped, [u1]);
 });
+
+// ---- category export (PR4) ---------------------------------------------------
+
+import { exportCategories } from '../src/categorize.js';
+import type { CategorizeResult, CategoryRow } from '../src/categorize.js';
+import { verifyObject } from '../src/sign.js';
+
+const cat = (p: Partial<CategoryRow>): CategoryRow => ({
+  id: 'c0', name: 'task label', terms: ['task', 'label'], sessions: 1, projects: ['proj'],
+  tokens: 1000, cost: 1, estimated: false, hasText: true, duplicate: false, ...p,
+});
+const resultOf = (categories: CategoryRow[]): CategorizeResult => ({
+  days: 30, totalSessions: categories.length, textSessions: categories.length,
+  categories, duplicates: [], skillCandidates: [],
+});
+
+test('exportCategories ships hasText clusters only, capped and cost-sorted', () => {
+  const rows = [
+    cat({ id: 'lo', cost: 1 }),
+    cat({ id: 'notext', cost: 99, hasText: false }), // never leaves the machine
+    cat({ id: 'hi', cost: 50 }),
+  ];
+  const out = exportCategories(resultOf(rows));
+  assert.deepEqual(out.map((c) => c.id), ['hi', 'lo']);
+
+  const many = Array.from({ length: 60 }, (_, i) => cat({ id: `c${i}`, cost: i }));
+  assert.equal(exportCategories(resultOf(many)).length, 40);
+  // sorted BEFORE slicing: the cap keeps the 40 most expensive, deterministically
+  assert.equal(exportCategories(resultOf(many))[0].id, 'c59');
+  assert.deepEqual(exportCategories(resultOf(many)), exportCategories(resultOf([...many].reverse())));
+});
+
+test('export categories carry ONLY the allowlisted aggregate fields', () => {
+  const out = exportCategories(resultOf([cat({})]));
+  assert.deepEqual(
+    Object.keys(out[0]).sort(),
+    ['cost', 'duplicate', 'estimated', 'id', 'name', 'projects', 'sessions', 'terms', 'tokens'],
+  );
+  assert.ok(out[0].terms.length <= 8);
+});
+
+test('signed export with categories round-trips verification; tampering fails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tm-keys-'));
+  const ex: ExportV1 = {
+    version: 1, user: 'alice', host: 'h', generatedAt: '2026-06-01T00:00:00.000Z', days: 30,
+    overall: metricsOf({ session_id: 'a', activity: 'coding' }),
+    byProject: {},
+    categories: exportCategories(resultOf([cat({})])),
+    categorizeDays: 30,
+  };
+  assert.equal(ex.version, 1); // additive fields — the wire version must NOT bump
+  const signed = signObject(ex as unknown as Record<string, unknown>, dir);
+  assert.equal(verifyObject(signed as unknown as Record<string, unknown>).ok, true);
+  const tampered = JSON.parse(JSON.stringify(signed));
+  tampered.categories[0].terms[0] = 'forged';
+  assert.equal(verifyObject(tampered).ok, false);
+});
