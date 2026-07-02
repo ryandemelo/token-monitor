@@ -228,7 +228,7 @@ Intent text is read from Claude Code, Cursor, Copilot, Gemini CLI, and Codex ses
 
 ### Project families
 
-A session that `cd`-s into monorepo subdirs used to fragment one repo into several "projects" (`backend`, `frontend`, `db`…) — inflating the project table and letting duplicate-work detection accuse the *same* repo of cross-project repetition. `collect` now assigns each session **one project: the shallowest directory it actually worked in** (a directory only adopts a label from an ancestor the session visited, so sibling projects can never merge). This is pure path grouping — no disk access, identical results for deleted directories — and deliberately conservative: resolving to the git repo root was tried and rejected because on umbrella repos it silently merged distinct products into one row, and a wrong merge corrupts the duplicate-work signal where a missed merge only under-reports.
+A session that `cd`-s into monorepo subdirs used to fragment one repo into several "projects" (`backend`, `frontend`, `db`…) — inflating the project table and letting duplicate-work detection accuse the *same* repo of cross-project repetition. `collect` now assigns each session **one project: the directory where most of its events ran**, with subdirectories folding into the shallowest parent the session visited (a directory only adopts a label from an ancestor the session actually entered, so sibling projects can never merge, and near-root launch dirs like a home directory never donate their name). This is pure path grouping — no disk access, identical results for deleted directories — and deliberately conservative: resolving to the git repo root was tried and rejected because on umbrella repos it silently merged distinct products into one row, and a wrong merge corrupts the duplicate-work signal where a missed merge only under-reports.
 
 The first 0.11 collect relabels historical rows in one pass — you'll see `(N relabeled into project families; originals in project_raw)` once, and per-project rows may visibly merge. The pre-relabel name of every changed row is kept in the `project_raw` column (`UPDATE events SET project = project_raw WHERE project_raw IS NOT NULL` reverts). Git-worktree checkouts opened as their own directory (`myapp-wt1`) still count as separate projects — fold those explicitly in `~/.token-monitor/project-aliases.json`:
 
@@ -283,7 +283,7 @@ The most valuable contribution: an adapter for another agent CLI (Aider, OpenCod
 - [x] Org-level cross-check via provider usage APIs: `reconcile`
 - [x] npm publish: `npx @ryandemelo/token-monitor`
 - [x] Task categorization: cluster sessions by intent, flag cross-project duplicate work, suggest org skills (`categorize`, on-device)
-- [x] Project families: worktrees + monorepo subdirs fold into one project (git-root resolution, `project_raw` audit trail)
+- [x] Project families: monorepo subdirs fold into one project per session (anchor-based path grouping, `project_raw` audit trail; worktrees fold via `project-aliases.json`)
 - [x] Cross-user duplicate work: aggregate-only category exports, `merge` clusters tasks across people and ranks org-skill candidates
 
 ## Integrity & threat model

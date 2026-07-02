@@ -90,11 +90,12 @@ Options:
   --db        SQLite path (default: ${DEFAULT_DB})
 
 Project families:
-  collect assigns each session ONE project — the shallowest directory the
-  session actually worked in — so cd-ing into monorepo subdirs no longer
-  fragments a repo into "backend"/"frontend" rows. Historical rows are
-  relabeled on collect; originals stay in the project_raw column. Worktree
-  dirs that should fold into their repo are mapped manually via
+  collect assigns each session ONE project — the directory where most of its
+  work happened, with monorepo subdirs folding into the shallowest parent the
+  session visited — so cd-ing around no longer fragments a repo into
+  "backend"/"frontend" rows. Historical rows are relabeled on collect;
+  originals stay in the project_raw column. Worktree dirs that should fold
+  into their repo are mapped manually via
   ~/.token-monitor/project-aliases.json ({"myapp-wt1": "myapp"}).
 `;
 
@@ -160,13 +161,18 @@ function parseClusterOpts(values: { threshold?: string; 'min-cluster'?: string }
 
 function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
   let totalRelabeled = 0;
+  // Aliases compose into the relabel TARGET, not just a separate pass: if an
+  // aliased project's logs still exist, relabeling to the adapter's name and
+  // then aliasing it away would flip the same rows back and forth on every
+  // collect — steady state must stay at 0 changes.
+  const aliases = loadProjectAliases();
   for (const source of sources) {
     const { events, result } = ADAPTERS[source]();
     result.eventsInserted = insertEvents(db, events);
     // Collect IS the backfill: converge historical rows of every session this
-    // scan still sees onto the family-normalized project (see relabelEvents).
+    // scan still sees onto the family-normalized (and aliased) project.
     const sessions = new Map<string, string>();
-    for (const e of events) sessions.set(`${e.source}\x1f${e.sessionId}`, e.project);
+    for (const e of events) sessions.set(`${e.source}\x1f${e.sessionId}`, aliases[e.project] ?? e.project);
     result.eventsRelabeled = relabelEvents(db, sessions);
     totalRelabeled += result.eventsRelabeled;
     const notes = [
@@ -181,9 +187,9 @@ function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
         `${String(result.eventsInserted).padStart(7)} new${notes ? `  (${notes})` : ''}`,
     );
   }
-  // User-asserted aliases fix rows whose logs rotated away (dead worktrees the
-  // resolver can never re-see); reversible via project_raw like any relabel.
-  const aliased = applyProjectAliases(db, loadProjectAliases());
+  // The direct pass catches rows whose logs rotated away (sessions the scan
+  // above never saw); reversible via project_raw like any relabel.
+  const aliased = applyProjectAliases(db, aliases);
   if (aliased > 0) console.log(`aliases      ${String(aliased).padStart(31)} rows relabeled via project-aliases.json`);
   if (totalRelabeled + aliased > 0) syncIntentProjects(db);
 }

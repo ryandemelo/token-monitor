@@ -62,14 +62,24 @@ interface MemberCategory {
   cat: ExportCategory;
 }
 
-/** Defense-in-depth: hand-built exports must never crash a merge. */
+/**
+ * Defense-in-depth: hand-built exports must never crash a merge — nor poison
+ * its sums. The full numeric/array contract is enforced, not just the match
+ * key: NaN sessions or a string cost would flow silently into every
+ * aggregate this file computes.
+ */
 function usable(cat: ExportCategory | undefined): cat is ExportCategory {
   return (
     !!cat &&
     typeof cat.id === 'string' &&
     Array.isArray(cat.terms) &&
     cat.terms.length > 0 &&
-    cat.terms.every((t) => typeof t === 'string' && t.length > 0)
+    cat.terms.every((t) => typeof t === 'string' && t.length > 0) &&
+    Number.isFinite(cat.sessions) &&
+    Number.isFinite(cat.tokens) &&
+    Number.isFinite(cat.cost) &&
+    (cat.projects === undefined ||
+      (Array.isArray(cat.projects) && cat.projects.every((p) => typeof p === 'string')))
   );
 }
 
@@ -107,7 +117,11 @@ export function mergeCategories(
   );
   const byItemId = new Map<string, MemberCategory>();
   const items: ClusterItem[] = members.map((m) => {
-    const id = `${m.identity}:${m.cat.id}`;
+    // Occurrence suffix on collision: duplicate category ids (hand-built
+    // export, or same-signer files a caller merged without dedupe) must not
+    // silently drop one row's cost into another's.
+    let id = `${m.identity}:${m.cat.id}`;
+    for (let n = 2; byItemId.has(id); n++) id = `${m.identity}:${m.cat.id}#${n}`;
     byItemId.set(id, m);
     return { id, project: m.identity, terms: m.cat.terms };
   });
@@ -148,8 +162,11 @@ export function mergeCategories(
 
   return {
     categories,
-    crossUserDuplicates: categories.filter((c) => c.crossUser),
-    orgSkillCandidates: categories.filter((c) => c.crossUser || c.sessions >= minCluster),
+    // Both tiers honor --min-cluster (README: "same knobs as categorize").
+    // At the default of 2 this changes nothing: a crossUser cluster always
+    // has ≥2 sessions.
+    crossUserDuplicates: categories.filter((c) => c.crossUser && c.sessions >= minCluster),
+    orgSkillCandidates: categories.filter((c) => c.sessions >= minCluster),
     withCategories,
     withinMemberDupCost,
     withinMemberDupMembers,

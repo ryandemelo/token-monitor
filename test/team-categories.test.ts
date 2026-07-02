@@ -112,3 +112,32 @@ test('pre-0.11 exports merge as metrics-only; coverage counts category-bearing o
   assert.equal(mc.withinMemberDupCost, 12);
   assert.equal(mc.withinMemberDupMembers, 1);
 });
+
+test('non-numeric category fields are rejected, not summed as NaN', () => {
+  const hostile = makeExport('mallory', 'h9', [
+    cat({ id: 'ok1' }),
+    { id: 'bad', name: 'x', terms: ['x'], sessions: 'NaNbait', tokens: 1, cost: 1 } as unknown as ExportCategory,
+    { id: 'bad2', name: 'y', terms: ['y'], sessions: 1, tokens: 1, cost: Infinity } as unknown as ExportCategory,
+  ]);
+  const mc = mergeCategories([hostile]);
+  assert.equal(mc.categories.length, 1);
+  assert.ok(Number.isFinite(mc.categories[0].cost));
+});
+
+test('duplicate category ids within an export keep both rows (occurrence suffix)', () => {
+  const twinA = cat({ id: 'same', cost: 5, sessions: 1 });
+  const twinB = cat({ id: 'same', cost: 7, sessions: 1 });
+  const mc = mergeCategories([makeExport('alice', 'h1', [twinA, twinB])]);
+  const total = mc.categories.reduce((s, c) => s + c.cost, 0);
+  assert.equal(total, 12); // nothing silently dropped
+});
+
+test('--min-cluster gates both cross-user duplicates and skill candidates', () => {
+  const a = makeExport('alice', 'h1', [cat({ id: 'a1', sessions: 1 })]);
+  const b = makeExport('bob', 'h2', [cat({ id: 'b1', sessions: 1 })]);
+  const loose = mergeCategories([a, b]); // default minCluster 2, cluster has 2 sessions
+  assert.equal(loose.crossUserDuplicates.length, 1);
+  const strict = mergeCategories([a, b], { minCluster: 5 });
+  assert.equal(strict.crossUserDuplicates.length, 0);
+  assert.equal(strict.orgSkillCandidates.length, 0);
+});

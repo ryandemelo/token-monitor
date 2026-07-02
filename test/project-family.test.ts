@@ -24,9 +24,9 @@ test('collapseSessionCwds never merges sibling projects under an unvisited paren
 });
 
 test('collapseSessionCwds normalizes mixed separators', () => {
-  const m = collapseSessionCwds(['C:\\w\\proj', 'C:\\w\\proj\\sub', 'C:/w/proj/sub/deep']);
-  assert.equal(m.get('C:\\w\\proj\\sub'), 'proj');
-  assert.equal(m.get('C:/w/proj/sub/deep'), 'proj');
+  const m = collapseSessionCwds(['C:\\Users\\bob\\proj', 'C:\\Users\\bob\\proj\\sub', 'C:/Users/bob/proj/sub/deep']);
+  assert.equal(m.get('C:\\Users\\bob\\proj\\sub'), 'proj');
+  assert.equal(m.get('C:/Users/bob/proj/sub/deep'), 'proj');
 });
 
 test('adoption works even when the ancestor is observed AFTER the descendant', () => {
@@ -61,4 +61,34 @@ test('sessionProjectOf picks the dominant per-event label, ties to first-seen', 
   assert.equal(sessionProjectOf(['/w/deep/repo', '/w/deep/repo', '/tmp/scratch']), 'repo');
   // dead-even tie goes to the first-seen label
   assert.equal(sessionProjectOf(['/w/deep/repo-a', '/w/deep/repo-b']), 'repo-a');
+});
+
+test('Windows and WSL home directories never donate (root prefixes discounted)', () => {
+  assert.equal(
+    sessionProjectOf(['C:\\Users\\bob', 'C:\\Users\\bob\\myrepo', 'C:\\Users\\bob\\myrepo']),
+    'myrepo',
+  );
+  assert.equal(
+    sessionProjectOf(['/mnt/c/Users/bob', '/mnt/c/Users/bob/myrepo', '/mnt/c/Users/bob/myrepo']),
+    'myrepo',
+  );
+  // …but a Windows repo path still donates to its subdirs
+  const m = collapseSessionCwds(['C:\\Users\\bob\\myrepo', 'C:\\Users\\bob\\myrepo\\sub']);
+  assert.equal(m.get('C:\\Users\\bob\\myrepo\\sub'), 'myrepo');
+});
+
+test('devcontainer /workspaces/<repo> mounts donate despite being shallow', () => {
+  const m = collapseSessionCwds(['/workspaces/myapp', '/workspaces/myapp/packages/core']);
+  assert.equal(m.get('/workspaces/myapp/packages/core'), 'myapp');
+});
+
+test('a majority of home-dir events cannot out-vote a real project dir', () => {
+  // Launcher chatter at ~ dominates by count, but near-root labels are
+  // ineligible while any plausible project dir was visited.
+  assert.equal(
+    sessionProjectOf(['/Users/ryan', '/Users/ryan', '/Users/ryan', '/Users/ryan/dev/app']),
+    'app',
+  );
+  // a session that never left near-root dirs still gets an honest label
+  assert.equal(sessionProjectOf(['/Users/ryan', '/Users/ryan']), 'ryan');
 });

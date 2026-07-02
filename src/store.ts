@@ -39,7 +39,12 @@ export function openDb(path: string = DEFAULT_DB): DatabaseSync {
   // NOT NULL). Mirrors the followthrough `origin` PRAGMA-guard precedent.
   const cols = db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === 'project_raw')) {
-    db.exec(`ALTER TABLE events ADD COLUMN project_raw TEXT`);
+    try {
+      db.exec(`ALTER TABLE events ADD COLUMN project_raw TEXT`);
+    } catch {
+      // Read-only pre-0.11 DB: skip the migration so read paths still work;
+      // the column appears on the first writable open.
+    }
   }
   return db;
 }
@@ -265,12 +270,18 @@ export function applyProjectAliases(db: DatabaseSync, aliases: Record<string, st
  */
 export function syncIntentProjects(db: DatabaseSync): number {
   ensureIntentsTable(db);
+  // Both subqueries are source-scoped: session ids are only unique WITHIN a
+  // source, and a cross-source id collision must not let one source's project
+  // overwrite (and endlessly re-trigger) another's intent row.
   const res = db.prepare(`
     UPDATE session_intents SET project =
       (SELECT project FROM events e
-       WHERE e.session_id = session_intents.session_id ORDER BY ts LIMIT 1)
+       WHERE e.session_id = session_intents.session_id
+         AND e.source = session_intents.source
+       ORDER BY ts LIMIT 1)
     WHERE EXISTS (SELECT 1 FROM events e
       WHERE e.session_id = session_intents.session_id
+        AND e.source = session_intents.source
         AND e.project <> session_intents.project)
   `).run();
   return Number(res.changes);

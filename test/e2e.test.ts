@@ -629,3 +629,24 @@ test('e2e: collect relabels fragmented historical rows into project families onc
   assert.equal(second.code, 0);
   assert.ok(!second.stdout.includes('relabeled into project families'), 'relabel must be idempotent');
 });
+
+test('e2e: an alias for a live project reaches steady state (no relabel flip-flop)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tm-e2e-alias-'));
+  const dir = join(home, '.claude', 'projects', 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'wt.jsonl'), JSON.stringify({
+    type: 'assistant', uuid: 'wt-u1', sessionId: 'swt', cwd: '/w/dev/myapp-wt1', timestamp: '2026-06-01T10:00:00.000Z',
+    message: { model: 'claude-opus-4-7', usage: { input_tokens: 10, output_tokens: 10 }, content: [] },
+  }) + '\n');
+  mkdirSync(join(home, '.token-monitor'), { recursive: true });
+  writeFileSync(join(home, '.token-monitor', 'project-aliases.json'), JSON.stringify({ 'myapp-wt1': 'myapp' }));
+
+  const first = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(first.code, 0);
+  const second = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(second.code, 0);
+  assert.ok(!second.stdout.includes('relabeled'), `second collect must be silent, got: ${second.stdout}`);
+  const third = run(['report', '--json', '--no-categories', ...DAYS], { home });
+  assert.ok(third.stdout.includes('"myapp"'), 'aliased project must appear in the export');
+  assert.ok(!JSON.parse(third.stdout).byProject['myapp-wt1'], 'raw worktree label must be gone');
+});

@@ -293,10 +293,10 @@ test('claude-code: two sessions in one dir label independently', () => {
   const dir = join(base, 'enc');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'sA.jsonl'), [
-    claudeLine('a1', 'sA', '/w/repo-a'),
-    claudeLine('a2', 'sA', '/w/repo-a/sub'),
+    claudeLine('a1', 'sA', '/w/dev/repo-a'),
+    claudeLine('a2', 'sA', '/w/dev/repo-a/sub'),
   ].join('\n'));
-  writeFileSync(join(dir, 'sB.jsonl'), claudeLine('b1', 'sB', '/w/repo-b'));
+  writeFileSync(join(dir, 'sB.jsonl'), claudeLine('b1', 'sB', '/w/dev/repo-b'));
   const { events } = collectClaudeCode(base);
   const byKey = new Map(events.map((e) => [e.eventKey, e.project]));
   assert.equal(byKey.get('a1'), 'repo-a');

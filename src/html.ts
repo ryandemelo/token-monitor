@@ -240,7 +240,11 @@ ${
     ? `<table><tr><th>Task</th><th>Users</th><th>Sessions</th><th>Cost</th><th>Score</th></tr>${skillRows}</table>`
     : `<p class="muted">No recurring tasks worth codifying yet.</p>`
 }
-<p class="muted">Task categories from ${mc.withCategories} of ${memberCount} export(s). Labels are redacted keyword terms derived on-device; raw prompt text never leaves a member's machine.</p>`;
+${
+  mc.withinMemberDupCost > 0
+    ? `<p class="muted">Within-member duplicate work: $${mc.withinMemberDupCost.toFixed(2)} across ${mc.withinMemberDupMembers} member(s) — each should run <code>categorize</code> locally.</p>\n`
+    : ''
+}<p class="muted">Task categories from ${mc.withCategories} of ${memberCount} export(s). Labels are redacted keyword terms derived on-device; raw prompt text never leaves a member's machine.</p>`;
 }
 
 /** Org dashboard for merged member exports — the HTML face of `merge`. */

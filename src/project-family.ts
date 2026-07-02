@@ -36,10 +36,20 @@ function lastSegment(p: string): string {
  * location, not a project: a session started in the home dir must not
  * relabel every repo it cd-s into as "ryan". Three path segments
  * (`/Users/ryan/Documents`…) is the shallowest thing that can plausibly BE a
- * project, so only those may donate their name to descendants.
+ * project, so only those may donate their name to descendants — after
+ * discounting OS root prefixes (`C:` drives, `/mnt/c` WSL, `/cygdrive/c`)
+ * so `C:\\Users\\ryan` counts the same 2 segments as `/Users/ryan`. The one
+ * shallow exception: `/workspaces/<repo>` is the devcontainer mount
+ * convention, where 2 segments IS the repo root.
  */
 function canDonate(normPath: string): boolean {
-  return normPath.split('/').filter(Boolean).length >= 3;
+  const parts = normPath.split('/').filter(Boolean);
+  if (parts.length > 0 && /^[A-Za-z]:$/.test(parts[0])) parts.shift();
+  if (parts.length >= 2 && /^(mnt|cygdrive)$/i.test(parts[0]) && /^[A-Za-z]$/.test(parts[1])) {
+    parts.splice(0, 2);
+  }
+  if (parts.length === 2 && parts[0] === 'workspaces') return true;
+  return parts.length >= 3;
 }
 
 /**
@@ -81,15 +91,21 @@ export function collapseSessionCwds(cwds: string[]): Map<string, string> {
  * descendant adoption), first-seen order breaking ties. Dominant beats
  * first-seen because sessions are often launched in a parent/launcher dir
  * and immediately cd into the real workspace — where the work happens is
- * the project. A single-cwd session is byte-identical to plain
- * basename(cwd). Pass one cwd PER EVENT (with repeats), not a unique set.
+ * the project. Near-root cwds (home dir, /tmp) can't win the vote while any
+ * plausible project dir was visited — otherwise a chatty home-dir session
+ * would out-vote the repo it briefly worked in, the exact relabeling the
+ * canDonate guard exists to prevent. A single-cwd session is byte-identical
+ * to plain basename(cwd). Pass one cwd PER EVENT (with repeats), not a
+ * unique set.
  */
 export function sessionProjectOf(eventCwds: string[]): string | undefined {
   if (eventCwds.length === 0) return undefined;
   const labels = collapseSessionCwds(eventCwds);
+  const plausible = eventCwds.filter((c) => canDonate(c.replace(/\\/g, '/').replace(/\/+$/, '')));
+  const voters = plausible.length > 0 ? plausible : eventCwds;
   const counts = new Map<string, number>();
   const firstSeen = new Map<string, number>();
-  eventCwds.forEach((c, i) => {
+  voters.forEach((c, i) => {
     const l = labels.get(c)!;
     counts.set(l, (counts.get(l) ?? 0) + 1);
     if (!firstSeen.has(l)) firstSeen.set(l, i);

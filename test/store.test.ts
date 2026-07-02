@@ -122,3 +122,19 @@ test('project aliases relabel at collect time; missing/corrupt file reads empty'
   writeFileSync(aliasPath, '{corrupt');
   assert.deepEqual(loadProjectAliases(aliasPath), {});
 });
+
+test('syncIntentProjects is source-scoped: a cross-source session_id collision cannot cross-write', () => {
+  const db = openDb(':memory:');
+  insertEvents(db, [
+    makeEvent({ eventKey: 'cc1', sessionId: 'shared', source: 'claude-code', project: 'proc', timestamp: '2026-06-01T00:00:00.000Z' }),
+    makeEvent({ eventKey: 'gx1', sessionId: 'shared', source: 'gemini-cli', project: 'other', timestamp: '2026-05-01T00:00:00.000Z' }),
+  ]);
+  recordIntents(db, [{
+    sessionId: 'shared', source: 'claude-code', project: 'proc', intentId: 'i1',
+    label: 'l', fingerprint: ['l'], hasText: true, firstSeen: '2026-06-01T00:00:00.000Z',
+  }]);
+  // Nothing to sync: the claude-code events already agree; the gemini event
+  // (earlier ts, different project) must be invisible to this intent row.
+  assert.equal(syncIntentProjects(db), 0);
+  assert.equal(loadIntents(db, ['shared']).get('shared')!.project, 'proc');
+});
