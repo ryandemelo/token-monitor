@@ -254,8 +254,6 @@ test('isDeclination matches harness rejection phrasings, not real errors', async
 
 // ---- project-family wiring (PR4) --------------------------------------------
 
-import { resetProjectFamilyCache } from '../src/project-family.js';
-
 /** One assistant line with usage, minimal enough for the adapter to accept. */
 function claudeLine(uuid: string, sessionId: string, cwd: string): string {
   return JSON.stringify({
@@ -264,47 +262,23 @@ function claudeLine(uuid: string, sessionId: string, cwd: string): string {
   });
 }
 
-test('claude-code: session cd-ing into monorepo subdirs keeps ONE project (git root)', () => {
-  resetProjectFamilyCache();
+test('claude-code: session cd-ing into monorepo subdirs keeps ONE project', () => {
   const base = mkdtempSync(join(tmpdir(), 'cc-family-'));
-  const repo = join(base, 'ws', 'kevq', 'process');
-  mkdirSync(join(repo, '.git'), { recursive: true });
-  mkdirSync(join(repo, 'backend', 'db'), { recursive: true });
-  mkdirSync(join(repo, 'frontend'), { recursive: true });
-
-  const logRoot = join(base, 'logs');
-  const dir = join(logRoot, 'some-encoded-dir');
+  const dir = join(base, 'enc');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 's1.jsonl'), [
-    claudeLine('u1', 's1', repo),
-    claudeLine('u2', 's1', join(repo, 'backend')),
-    claudeLine('u3', 's1', join(repo, 'frontend')),
-    claudeLine('u4', 's1', join(repo, 'backend', 'db')),
+    claudeLine('u1', 's1', '/w/kevq/process'),
+    claudeLine('u2', 's1', '/w/kevq/process/backend'),
+    claudeLine('u3', 's1', '/w/kevq/process/frontend'),
+    claudeLine('u4', 's1', '/w/kevq/process/backend/db'),
   ].join('\n'));
 
-  const { events } = collectClaudeCode(logRoot);
+  const { events } = collectClaudeCode(base);
   assert.equal(events.length, 4);
   for (const e of events) assert.equal(e.project, 'process'); // the exact kevq regression
 });
 
-test('claude-code: dead paths fall back to descendant adoption, still one project', () => {
-  resetProjectFamilyCache();
-  const base = mkdtempSync(join(tmpdir(), 'cc-dead-'));
-  const dir = join(base, 'enc');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 's2.jsonl'), [
-    claudeLine('d1', 's2', '/gone/kevq/process'),
-    claudeLine('d2', 's2', '/gone/kevq/process/backend'),
-    claudeLine('d3', 's2', '/gone/kevq/process/frontend'),
-  ].join('\n'));
-
-  const { events } = collectClaudeCode(base);
-  assert.equal(events.length, 3);
-  for (const e of events) assert.equal(e.project, 'process');
-});
-
-test('claude-code: single-cwd no-git session keeps old basename behavior', () => {
-  resetProjectFamilyCache();
+test('claude-code: single-cwd session keeps old basename behavior', () => {
   const base = mkdtempSync(join(tmpdir(), 'cc-single-'));
   const dir = join(base, 'enc');
   mkdirSync(dir, { recursive: true });
@@ -314,49 +288,18 @@ test('claude-code: single-cwd no-git session keeps old basename behavior', () =>
   assert.equal(events[0].project, 'proj-alpha');
 });
 
-test('claude-code: worktree checkout resolves to the MAIN repo name', () => {
-  resetProjectFamilyCache();
-  const base = mkdtempSync(join(tmpdir(), 'cc-wt-'));
-  const main = join(base, 'quaestor');
-  mkdirSync(join(main, '.git', 'worktrees', 'wt'), { recursive: true });
-  const wt = join(base, 'quaestor-cl-iter-02');
-  mkdirSync(wt, { recursive: true });
-  writeFileSync(join(wt, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
-
-  const logs = join(base, 'logs');
-  mkdirSync(join(logs, 'enc'), { recursive: true });
-  writeFileSync(join(logs, 'enc', 's4.jsonl'), claudeLine('w1', 's4', wt));
-  const { events } = collectClaudeCode(logs);
-  assert.equal(events[0].project, 'quaestor');
-});
-
-test('codex/cursor/copilot workspace paths resolve through the family resolver', () => {
-  resetProjectFamilyCache();
-  const base = mkdtempSync(join(tmpdir(), 'ws-family-'));
-  const main = join(base, 'megarepo');
-  mkdirSync(join(main, '.git', 'worktrees', 'x'), { recursive: true });
-  const wt = join(base, 'megarepo-iter-9');
-  mkdirSync(wt, { recursive: true });
-  writeFileSync(join(wt, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'x')}\n`);
-
-  // codex: session_meta cwd inside the worktree
-  const codexRoot = join(base, 'codex', '2026', '06', '01');
-  mkdirSync(codexRoot, { recursive: true });
-  writeFileSync(join(codexRoot, 'rollout-1.jsonl'), [
-    JSON.stringify({ type: 'session_meta', timestamp: '2026-06-01T10:00:00.000Z', payload: { type: 'session_meta', id: 'cx1', cwd: wt } }),
-    JSON.stringify({ type: 'event_msg', timestamp: '2026-06-01T10:00:01.000Z', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 5, output_tokens: 5 } } } }),
+test('claude-code: two sessions in one dir label independently', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-two-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'sA.jsonl'), [
+    claudeLine('a1', 'sA', '/w/repo-a'),
+    claudeLine('a2', 'sA', '/w/repo-a/sub'),
   ].join('\n'));
-  const cx = collectCodex(join(base, 'codex'));
-  assert.equal(cx.events[0].project, 'megarepo');
-
-  // copilot: workspace.json folder pointing at the worktree
-  const wsDir = join(base, 'code', 'workspaceStorage', 'w1');
-  mkdirSync(join(wsDir, 'chatSessions'), { recursive: true });
-  writeFileSync(join(wsDir, 'workspace.json'), JSON.stringify({ folder: `file://${wt}` }));
-  writeFileSync(join(wsDir, 'chatSessions', 's.json'), JSON.stringify({
-    sessionId: 'cp1',
-    requests: [{ requestId: 'r1', message: { text: 'hi' }, response: [{ value: 'ok' }] }],
-  }));
-  const cp = collectCopilot(join(base, 'code'));
-  assert.equal(cp.events[0].project, 'megarepo');
+  writeFileSync(join(dir, 'sB.jsonl'), claudeLine('b1', 'sB', '/w/repo-b'));
+  const { events } = collectClaudeCode(base);
+  const byKey = new Map(events.map((e) => [e.eventKey, e.project]));
+  assert.equal(byKey.get('a1'), 'repo-a');
+  assert.equal(byKey.get('a2'), 'repo-a');
+  assert.equal(byKey.get('b1'), 'repo-b');
 });

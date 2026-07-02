@@ -3,7 +3,6 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
-import { familyOf } from '../project-family.js';
 
 const ROOT = join(homedir(), '.codex', 'sessions');
 
@@ -99,9 +98,7 @@ export function collectCodex(root: string = ROOT): { events: UsageEvent[]; resul
       if (!p) continue;
       if (d.type === 'session_meta' || p.type === 'session_meta') {
         if (p.id) sessionId = p.id;
-        // familyOf folds worktrees/monorepo subdirs into the repo root name;
-        // dead paths fall back to today's basename behavior.
-        if (p.cwd) project = familyOf(p.cwd) ?? basename(p.cwd);
+        if (p.cwd) project = basename(p.cwd);
       } else if (p.type === 'turn_context' && p.model) {
         model = p.model;
       } else if (d.type === 'response_item' && p.type === 'message' && p.role === 'user') {

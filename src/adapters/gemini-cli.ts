@@ -3,7 +3,6 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
-import { familyOf } from '../project-family.js';
 
 const ROOT = join(homedir(), '.gemini', 'tmp');
 const PROJECTS_JSON = join(homedir(), '.gemini', 'projects.json');
@@ -48,12 +47,9 @@ function loadHashToProject(): Map<string, string> {
     if (entries && typeof entries === 'object') {
       for (const [k, v] of Object.entries(entries as Record<string, unknown>)) {
         // Either {path: hash} or {hash: {path}} shapes have been seen across versions.
-        // Keys/.path are full workspace paths — resolve the repo family before
-        // flattening to a display name (worktrees fold to the main repo).
-        if (typeof v === 'string') map.set(v, familyOf(k) ?? basename(k));
+        if (typeof v === 'string') map.set(v, basename(k));
         else if (v && typeof v === 'object' && typeof (v as { path?: string }).path === 'string') {
-          const p = (v as { path: string }).path;
-          map.set(k, familyOf(p) ?? basename(p));
+          map.set(k, basename((v as { path: string }).path));
         }
       }
     }

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
-import { familyOf, collapseSessionCwds } from '../project-family.js';
+import { sessionProjectOf } from '../project-family.js';
 
 const ROOT = join(homedir(), '.claude', 'projects');
 
@@ -171,31 +171,20 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
         for (const id of toolUseIds) byToolUseId.set(id, ev);
       }
 
-      // One project per session. Precedence: (1) first cwd whose git root
-      // resolves on disk (follows worktree pointers to the main checkout);
-      // (2) descendant-adoption over the session's observed cwds (dead
-      // paths); (3) the log dir name when no event carried a cwd. A
-      // single-cwd no-git session stays byte-identical to the old
-      // basename(cwd) behavior via collapseSessionCwds.
+      // One project per session: the dominant per-event cwd label after
+      // descendant adoption (see project-family.ts) — the log dir name when
+      // no event carried a cwd. A single-cwd session stays byte-identical to
+      // the old basename(cwd) behavior.
       const cwdsBySession = new Map<string, string[]>();
       for (const { ev, cwd } of fileEvents) {
         if (!cwd) continue;
         let list = cwdsBySession.get(ev.sessionId);
         if (!list) cwdsBySession.set(ev.sessionId, (list = []));
-        if (!list.includes(cwd)) list.push(cwd); // first-seen order
+        list.push(cwd); // one entry PER EVENT — dominance needs the counts
       }
       const projectBySession = new Map<string, string>();
       for (const [sessionId, cwds] of cwdsBySession) {
-        let project: string | undefined;
-        for (const c of cwds) {
-          const f = familyOf(c);
-          if (f) {
-            project = f;
-            break;
-          }
-        }
-        if (!project) project = collapseSessionCwds(cwds).get(cwds[0]);
-        projectBySession.set(sessionId, project ?? dir);
+        projectBySession.set(sessionId, sessionProjectOf(cwds) ?? dir);
       }
       for (const { ev } of fileEvents) {
         ev.project = projectBySession.get(ev.sessionId) ?? dir;

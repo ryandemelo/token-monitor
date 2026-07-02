@@ -3,7 +3,6 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
-import { familyOf } from '../project-family.js';
 
 /**
  * EXPERIMENTAL — VS Code Copilot Chat persists sessions under
@@ -90,10 +89,7 @@ function projectOf(wsDir: string): string {
   try {
     const ws = JSON.parse(readFileSync(join(wsDir, 'workspace.json'), 'utf8'));
     const folder = ws.folder ?? ws.workspace;
-    if (typeof folder === 'string') {
-      const path = decodeURIComponent(folder.replace(/^file:\/\//, ''));
-      return familyOf(path) ?? basename(path);
-    }
+    if (typeof folder === 'string') return basename(decodeURIComponent(folder.replace(/^file:\/\//, '')));
   } catch {
     /* fall through */
   }

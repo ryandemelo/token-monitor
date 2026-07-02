@@ -6,7 +6,6 @@ import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
 } from './store.js';
-import { resetProjectFamilyCache } from './project-family.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
@@ -91,11 +90,12 @@ Options:
   --db        SQLite path (default: ${DEFAULT_DB})
 
 Project families:
-  collect resolves each session's directory to its git repo root (following
-  worktree checkouts back to the main repo), so monorepo subdirs and worktrees
-  count as ONE project. Historical rows are relabeled on collect; originals
-  stay in the project_raw column. Rows whose logs rotated away can be fixed
-  manually via ~/.token-monitor/project-aliases.json ({"old-name": "repo"}).
+  collect assigns each session ONE project — the shallowest directory the
+  session actually worked in — so cd-ing into monorepo subdirs no longer
+  fragments a repo into "backend"/"frontend" rows. Historical rows are
+  relabeled on collect; originals stay in the project_raw column. Worktree
+  dirs that should fold into their repo are mapped manually via
+  ~/.token-monitor/project-aliases.json ({"myapp-wt1": "myapp"}).
 `;
 
 function buildSignedExportJson(
@@ -159,9 +159,6 @@ function parseClusterOpts(values: { threshold?: string; 'min-cluster'?: string }
 }
 
 function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
-  // One memo lifetime per collect run: disk is re-read next run, so a
-  // deleted/recreated worktree converges on the next collect.
-  resetProjectFamilyCache();
   let totalRelabeled = 0;
   for (const source of sources) {
     const { events, result } = ADAPTERS[source]();

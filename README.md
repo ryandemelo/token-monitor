@@ -228,12 +228,12 @@ Intent text is read from Claude Code, Cursor, Copilot, Gemini CLI, and Codex ses
 
 ### Project families
 
-A monorepo session that `cd`-s into `backend/` or a git worktree opened as its own directory used to fragment one repo into several "projects" — inflating the project table and letting duplicate-work detection accuse the *same* repo of cross-project repetition. `collect` now resolves each session's directory to its **git repo root** (following a worktree's `.git`-file pointer back to the main checkout; falling back to within-session path grouping when directories no longer exist), so worktrees and subdirectories fold into one project.
+A session that `cd`-s into monorepo subdirs used to fragment one repo into several "projects" (`backend`, `frontend`, `db`…) — inflating the project table and letting duplicate-work detection accuse the *same* repo of cross-project repetition. `collect` now assigns each session **one project: the shallowest directory it actually worked in** (a directory only adopts a label from an ancestor the session visited, so sibling projects can never merge). This is pure path grouping — no disk access, identical results for deleted directories — and deliberately conservative: resolving to the git repo root was tried and rejected because on umbrella repos it silently merged distinct products into one row, and a wrong merge corrupts the duplicate-work signal where a missed merge only under-reports.
 
-The first 0.11 collect relabels historical rows in one pass — you'll see `(N relabeled into project families; originals in project_raw)` once, and per-project trend rows may visibly merge. The pre-relabel name of every changed row is kept in the `project_raw` column (`UPDATE events SET project = project_raw WHERE project_raw IS NOT NULL` reverts). Rows whose source logs already rotated away can't be re-resolved; map those manually in `~/.token-monitor/project-aliases.json`:
+The first 0.11 collect relabels historical rows in one pass — you'll see `(N relabeled into project families; originals in project_raw)` once, and per-project rows may visibly merge. The pre-relabel name of every changed row is kept in the `project_raw` column (`UPDATE events SET project = project_raw WHERE project_raw IS NOT NULL` reverts). Git-worktree checkouts opened as their own directory (`myapp-wt1`) still count as separate projects — fold those explicitly in `~/.token-monitor/project-aliases.json`:
 
 ```json
-{ "quaestor-cl-iter-02": "quaestor", "old-worktree-name": "repo" }
+{ "myapp-wt1": "myapp", "quaestor-cl-iter-02": "quaestor-cl" }
 ```
 
 ### Cross-user duplicate work and org skills (lead)

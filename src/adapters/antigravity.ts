@@ -4,7 +4,6 @@ import { homedir, tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import type { UsageEvent, CollectResult } from '../types.js';
 import { classify } from '../classify.js';
-import { familyOf } from '../project-family.js';
 import { decodeMessage, intField, strField, msgField, msgFields, type WireMessage } from './../protowire.js';
 
 /**
@@ -64,10 +63,7 @@ function collectConversation(dbPath: string, scratch: string, events: UsageEvent
       if (row?.data) {
         const ctx = msgField(decodeMessage(row.data), 1);
         const workspaceUri = strField(ctx, 1);
-        if (workspaceUri) {
-          const path = decodeURIComponent(workspaceUri.replace(/^file:\/\//, ''));
-          project = familyOf(path) ?? basename(path);
-        }
+        if (workspaceUri) project = basename(decodeURIComponent(workspaceUri.replace(/^file:\/\//, '')));
         gitBranch = strField(ctx, 4);
       }
     } catch {

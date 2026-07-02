@@ -1,37 +1,29 @@
 /**
- * Project-family resolution — folds monorepo subdirectories and git-worktree
- * checkouts into ONE canonical project name, so `report` doesn't fragment a
- * repo into per-subdir rows ("backend"/"frontend" out of one session that
- * cd-ed around) and `categorize` doesn't read two worktrees of the same repo
- * as "duplicate work across ≥2 projects".
+ * Project-family resolution — folds a session's monorepo-subdirectory cwds
+ * into ONE canonical project name, so `report` doesn't fragment a repo into
+ * per-subdir rows ("backend"/"frontend" out of one session that cd-ed
+ * around) and `categorize` doesn't read those fragments as "duplicate work
+ * across ≥2 projects".
  *
- * Two mechanisms, in order of trust:
- *   1. gitRootOf() — resolve a cwd against the REAL repo layout on disk:
- *      walk up to the first `.git`, and follow a worktree's `.git`-FILE
- *      `gitdir:` pointer back to the main checkout. Truth from git itself.
- *   2. collapseSessionCwds() — when paths are dead (deleted worktrees, logs
- *      from another machine), descendant-adoption WITHIN one session's
- *      observed cwds: zero disk access, and structurally unable to over-merge
- *      sibling repos because a label is only ever adopted from an ancestor
- *      the session actually visited.
+ * Mechanism: descendant adoption over the session's OWN observed cwds. A cwd
+ * that is a path-descendant of another observed cwd adopts the shallowest
+ * observed ancestor's basename. Zero disk access, identical answers for live
+ * and deleted paths, and structurally unable to over-merge sibling projects
+ * because a label is only ever adopted from a directory the session actually
+ * visited.
  *
- * Name heuristics (e.g. stripping "-iter-NN" suffixes) are deliberately
- * absent: a wrong merge silently corrupts the duplicate-work signal the
- * product sells, while a missed merge only under-reports.
+ * Git-root resolution (walking up to `.git`, following worktree pointers)
+ * was built, dogfooded, and REJECTED: on a real umbrella repo it folded five
+ * distinct products (goose, openwebui, kevq/process, quaestor-cl,
+ * corporate-site) into one "metis" row, while sessions on deleted worktree
+ * paths — which can't walk the disk — kept the subdir name, splitting one
+ * family into two labels. A wrong merge silently corrupts the duplicate-work
+ * signal the product sells; a missed merge only under-reports. The anchor
+ * directory a session was opened in matches the agent's own workspace notion
+ * and never surprises. Name heuristics (stripping "-iter-NN") are absent for
+ * the same reason; worktree checkouts that SHOULD fold into their repo are
+ * the user's call via ~/.token-monitor/project-aliases.json.
  */
-import { readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-
-/**
- * cwd -> resolved root, memoized: one kevq session carried 1255 events on a
- * single cwd, and every event of every historical file re-asks on collect.
- * Valid for one process run (the CLI is one-shot); tests reset explicitly.
- */
-const rootCache = new Map<string, string | undefined>();
-
-export function resetProjectFamilyCache(): void {
-  rootCache.clear();
-}
 
 /** Basename that tolerates either separator — cwds may come from another OS's logs. */
 function lastSegment(p: string): string {
@@ -40,80 +32,23 @@ function lastSegment(p: string): string {
 }
 
 /**
- * A worktree's `.git` is a FILE containing `gitdir: <path-into-main-checkout>`.
- * Map it back to the main repo root; a submodule (`/.git/modules/`) keeps the
- * containing dir — a submodule IS its own project, not its superproject.
- * Anything unparsable falls back to the containing dir (plain repo semantics).
+ * A directory this shallow (`/`, `/Users`, `/Users/ryan`) is a launch
+ * location, not a project: a session started in the home dir must not
+ * relabel every repo it cd-s into as "ryan". Three path segments
+ * (`/Users/ryan/Documents`…) is the shallowest thing that can plausibly BE a
+ * project, so only those may donate their name to descendants.
  */
-function resolveGitFile(gitFile: string, containing: string): string {
-  try {
-    const m = readFileSync(gitFile, 'utf8').match(/^gitdir:\s*(.+)$/m);
-    if (!m) return containing;
-    // Relative gitdirs resolve against the .git file's own directory.
-    const gitdir = resolve(dirname(gitFile), m[1].trim());
-    // \ -> / is length-preserving, so indexes found on the normalized copy
-    // slice the original correctly (keeps native separators in the result).
-    const norm = gitdir.replace(/\\/g, '/');
-    const wt = norm.indexOf('/.git/worktrees/');
-    if (wt !== -1) return gitdir.slice(0, wt);
-    return containing;
-  } catch {
-    return containing;
-  }
+function canDonate(normPath: string): boolean {
+  return normPath.split('/').filter(Boolean).length >= 3;
 }
 
 /**
- * Walk up from cwd to the enclosing git repo root, following worktree
- * pointers to the MAIN checkout. Returns undefined when nothing resolves —
- * dead paths, permission errors, network mounts all fail closed so callers
- * keep today's basename behavior. Capped at 32 levels (deeper is not a
- * real workspace; unbounded walks on cyclic mounts are worse).
- */
-export function gitRootOf(cwd: string): string | undefined {
-  if (rootCache.has(cwd)) return rootCache.get(cwd);
-  let root: string | undefined;
-  try {
-    let dir = cwd;
-    for (let i = 0; i < 32; i++) {
-      const marker = join(dir, '.git');
-      let st;
-      try {
-        st = statSync(marker);
-      } catch {
-        st = undefined;
-      }
-      if (st?.isDirectory()) {
-        root = dir;
-        break;
-      }
-      if (st?.isFile()) {
-        root = resolveGitFile(marker, dir);
-        break;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break; // filesystem root
-      dir = parent;
-    }
-  } catch {
-    root = undefined;
-  }
-  rootCache.set(cwd, root);
-  return root;
-}
-
-/** Canonical project name for a cwd, or undefined when the path doesn't resolve. */
-export function familyOf(cwd: string): string | undefined {
-  const root = gitRootOf(cwd);
-  return root ? lastSegment(root) : undefined;
-}
-
-/**
- * Dead-path fallback: label each observed cwd of ONE session without touching
- * disk. A cwd that is a path-descendant of another observed cwd adopts the
- * SHALLOWEST observed ancestor's basename (a session that visited
- * `…/kevq/process` and `…/kevq/process/backend` is one project: `process`).
- * Unrelated cwds keep their own basename — sibling repos under a common
- * parent can never merge, because the parent itself was never visited.
+ * Label each observed cwd of ONE session. A cwd that is a path-descendant of
+ * another observed cwd adopts the SHALLOWEST observed ancestor's basename
+ * (a session that visited `…/kevq/process` and `…/kevq/process/backend` is
+ * one project: `process`). Unrelated cwds keep their own basename — sibling
+ * projects under a common parent can never merge, because the parent itself
+ * was never visited — and near-root launch dirs never donate (canDonate).
  */
 export function collapseSessionCwds(cwds: string[]): Map<string, string> {
   const out = new Map<string, string>();
@@ -131,7 +66,7 @@ export function collapseSessionCwds(cwds: string[]): Map<string, string> {
     for (const anc of sorted) {
       if (anc === c) continue;
       const na = norm.get(anc)!;
-      if (nc.startsWith(na + '/')) {
+      if (canDonate(na) && nc.startsWith(na + '/')) {
         label = lastSegment(na);
         break;
       }
@@ -139,4 +74,27 @@ export function collapseSessionCwds(cwds: string[]): Map<string, string> {
     out.set(c, label);
   }
   return out;
+}
+
+/**
+ * One project per session: the DOMINANT label over all events' cwds (after
+ * descendant adoption), first-seen order breaking ties. Dominant beats
+ * first-seen because sessions are often launched in a parent/launcher dir
+ * and immediately cd into the real workspace — where the work happens is
+ * the project. A single-cwd session is byte-identical to plain
+ * basename(cwd). Pass one cwd PER EVENT (with repeats), not a unique set.
+ */
+export function sessionProjectOf(eventCwds: string[]): string | undefined {
+  if (eventCwds.length === 0) return undefined;
+  const labels = collapseSessionCwds(eventCwds);
+  const counts = new Map<string, number>();
+  const firstSeen = new Map<string, number>();
+  eventCwds.forEach((c, i) => {
+    const l = labels.get(c)!;
+    counts.set(l, (counts.get(l) ?? 0) + 1);
+    if (!firstSeen.has(l)) firstSeen.set(l, i);
+  });
+  return [...counts.entries()].sort(
+    (a, b) => b[1] - a[1] || firstSeen.get(a[0])! - firstSeen.get(b[0])!,
+  )[0][0];
 }
