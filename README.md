@@ -186,6 +186,18 @@ token-monitor analyze --llm
 
 No API key management: it reuses your existing agent CLI and its subscription. The payload is the same aggregates-only data as `report --json` (token counts, ratios, tool names, project basenames — never prompts or code). It does leave your machine via that agent's provider, so skip `--llm` if even project names are sensitive.
 
+## Data completeness
+
+Agent tools rotate their logs — Claude Code deletes transcripts after `cleanupPeriodDays` (default 30) — so a window can be full of holes without anything saying so. Every report now opens with what it actually covers:
+
+```
+coverage: claude-code 26/30d ⚠ · 4d gap
+```
+
+Three things follow from it. A window reaching past retention gets an explanation rather than a shrug — *"history before ~35d ago was likely deleted by Claude Code's 30-day retention before it could be collected"* — worded as a likelihood, and only when the record actually runs out where deletion would have cut it. `report --trend` **suppresses its arrows** when the previous window has materially less data than the current one, printing `insufficient data` instead: an arrow drawn across a collection gap measures the gap, not your behavior, and a false "improving" costs more than a missing verdict. And exports carry per-source day counts and dates, so a lead's `merge` can flag a member whose scheduled push is still arriving faithfully while their adapter has collected nothing for weeks — previously indistinguishable from a genuinely quiet member.
+
+Coverage is counts and dates only. A quiet day is not proof of missing data, and the report says so rather than guessing.
+
 ## Trends
 
 `report --trend` compares the window against the previous same-length one — spend, cost, cache hit, rework, and the optimization signals, each with a direction arrow (green = improving, red = regressing), plus the top project movers by spend change. The HTML dashboard includes the trend automatically when two windows of data exist.

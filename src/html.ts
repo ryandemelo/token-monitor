@@ -6,6 +6,7 @@ import { assignPersona, generalRecommendations } from './personas.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import { fmtTokens, fmtSubagents, fmtCacheTtl } from './report.js';
+import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote } from './coverage.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
@@ -126,6 +127,9 @@ export function renderHtml(
 <table><tr><th>Project</th><th>Previous</th><th>Now</th><th>Change</th></tr>${movers}</table>`;
   }
 
+  const coverage = computeCoverage(events, opts.days);
+  const coverageNote = retentionNote(coverage, opts.days, readRetentionDays());
+
   const rates = blendedRates(m);
   const followSection =
     opts.follow && opts.follow.length
@@ -145,6 +149,8 @@ export function renderHtml(
 <h2>Where the tokens go</h2>
 ${stackedBar(m)}
 <div class="legend">${legend}</div>
+<p class="muted">coverage: ${esc(fmtCoverage(coverage))}</p>
+${coverageNote ? `<p class="dup">⚠ ${esc(coverageNote)}</p>` : ''}
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
 <p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of main-loop fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}${esc(fmtSubagents(m))}${esc(fmtCacheTtl(m))}</p>
 ${opts.categorize ? `<p class="dup">🔁 ${esc(fmtCategorizeSummary(opts.categorize))} <span class="muted">— run <code>categorize</code> for detail</span></p>` : ''}

@@ -278,14 +278,46 @@ export function loadProjectAliases(path: string = DEFAULT_ALIASES): Record<strin
   try {
     const data = JSON.parse(readFileSync(path, 'utf8'));
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return {};
-    const out: Record<string, string> = {};
+    const raw: Record<string, string> = {};
     for (const [k, v] of Object.entries(data)) {
-      if (typeof v === 'string' && v && k) out[k] = v;
+      if (typeof v === 'string' && v && k) raw[k] = v;
     }
-    return out;
+    return resolveAliasChains(raw);
   } catch {
     return {};
   }
+}
+
+/**
+ * Collapse `{a: b, b: c}` to `{a: c, b: c}` (#74).
+ *
+ * The map is applied twice per collect — once composed into the relabel
+ * target, which resolves a single level, and once as a direct pass that can
+ * re-match rows the previous entry just rewrote. With a chain those two fight
+ * forever: every collect reports a relabel, and the answer depends on JSON key
+ * order. Resolving to a fixed point first makes both passes agree, so steady
+ * state is genuinely zero changes.
+ *
+ * A cycle (`a -> b -> a`) has no terminal target, so its keys collapse to
+ * themselves — a no-op that applyProjectAliases already skips. That beats
+ * picking an arbitrary winner, and it beats dropping the keys, which would
+ * change what `loadProjectAliases` returns for the self-maps a user may
+ * legitimately have written.
+ */
+export function resolveAliasChains(raw: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const from of Object.keys(raw)) {
+    let to = raw[from];
+    const seen = new Set([from]);
+    // Walk to the end of the chain, stopping if we return to where we started
+    // or revisit a node — either way there is no further terminal target.
+    while (to !== from && raw[to] !== undefined && !seen.has(to)) {
+      seen.add(to);
+      to = raw[to];
+    }
+    out[from] = to;
+  }
+  return out;
 }
 
 /** Apply alias relabels at collect time (same audit trail as relabelEvents). */
