@@ -146,7 +146,7 @@ export function renderHtml(
 ${stackedBar(m)}
 <div class="legend">${legend}</div>
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
-<p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}${esc(fmtSubagents(m))}</p>
+<p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of main-loop fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}${esc(fmtSubagents(m))}</p>
 ${opts.categorize ? `<p class="dup">🔁 ${esc(fmtCategorizeSummary(opts.categorize))} <span class="muted">— run <code>categorize</code> for detail</span></p>` : ''}
 
 <h2>Projects</h2>

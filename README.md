@@ -172,7 +172,7 @@ Fan-out is reported, not judged: delegating heavily can be exactly the right cal
 
 Two signals are deliberately scoped to the main loop on **both** sides of their ratio: **context bloat** and **cold restarts**. Their remedies — compact, start fresh, batch prompts, split idle work — cannot be applied to a run that is spawned, works back-to-back and exits, and subagent runs outnumber conversations by roughly 14:1, so including them would bury a real hygiene problem in a denominator nobody can act on. Everything that measures *spend* — activity mix, cost, rework, retries, premium routing, per-project totals — counts subagent turns in full.
 
-One-time re-basing: on the first collect after upgrading, spend-share metrics (rework, retry, premium) step because their denominators finally include the fan-out. If you are tracking a recommendation through follow-through across that boundary, treat that single move as a measurement correction, not as your intervention working.
+One-time re-basing: on the first collect after upgrading, spend-share metrics (rework, retry, premium) and **cache hit ratio** step because their denominators finally include the fan-out. If you are tracking a recommendation through follow-through across that boundary, treat that single move as a measurement correction, not as your intervention working.
 
 Add `--llm` and the aggregates go to a coding agent you already have installed (`claude`, `gemini`, or `codex` — auto-detected, override with `--agent`), which returns prioritized interventions with the evidence, the workflow change, and the metric to watch:
 

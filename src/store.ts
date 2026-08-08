@@ -32,11 +32,6 @@ export function openDb(path: string = DEFAULT_DB): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
-    -- relabelEvents and syncIntentProjects look rows up one session at a time.
-    -- Without this every collect ran a full table scan PER SESSION, which was
-    -- survivable at ~150 sessions and became minutes once subagent runs made
-    -- it thousands: measured 8m16s -> 17s on a 165k-row database.
-    CREATE INDEX IF NOT EXISTS idx_events_session ON events(source, session_id);
   `);
   migrate(db);
   return db;
@@ -66,6 +61,16 @@ function migrate(db: DatabaseSync): void {
     ['parent_session_id', 'TEXT'],
     ['agent_type', 'TEXT'],
   ];
+  // relabelEvents and syncIntentProjects look rows up one session at a time.
+  // Without this every collect ran a full table scan PER SESSION — survivable
+  // at ~150 sessions, minutes once subagent runs make it thousands (measured
+  // 8m16s -> 5.2s on a 165k-row database). Same try/catch as the ALTERs
+  // below: a DB that can't be written must still open for reading.
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_events_session ON events(source, session_id)`);
+  } catch {
+    /* read-only DB: reads still work, the index appears on the first writable open */
+  }
   for (const [name, type] of wanted) {
     if (cols.has(name)) continue;
     try {

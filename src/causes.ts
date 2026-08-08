@@ -52,8 +52,13 @@ const spendOf = (e: StoredEvent) => e.input_tokens + e.output_tokens;
 function decomposeCacheHit(sessions: StoredEvent[][]): Cause[] {
   const b = { cold: 0, short: 0, churn: 0, steady: 0 };
   for (const arr of sessions) {
-    const short = arr.length < SHORT_SESSION_TURNS;
-    const growth = contextGrowthOf(arr);
+    // Mirror metrics.ts on subagent runs too: they never idle and cannot be
+    // compacted, so their fresh input is steady-state here rather than a cold
+    // restart or context churn. Without this the same report can print "cold
+    // restarts 0%" and "dominant cause: cold restarts (83%)".
+    const sidechain = arr.some((e) => e.is_sidechain === 1);
+    const short = !sidechain && arr.length < SHORT_SESSION_TURNS;
+    const growth = sidechain ? undefined : contextGrowthOf(arr);
     // Mirror metrics.ts exactly: late-half growth only counts as churn when it
     // is re-paid FRESH, not served from cache. Otherwise a well-cached session
     // would be mislabelled, contradicting the tool's own contextBloatShare.
@@ -63,7 +68,7 @@ function decomposeCacheHit(sessions: StoredEvent[][]): Cause[] {
     for (let i = 0; i < arr.length; i++) {
       const f = freshOf(arr[i]);
       if (f === 0) continue;
-      if (i > 0 && Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
+      if (!sidechain && i > 0 && Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
         b.cold += f;
       } else if (short) {
         b.short += f;

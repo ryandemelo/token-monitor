@@ -79,7 +79,12 @@ export function targetFor(key: string, sessions: SessionInfo[]): Target | undefi
   const spec = PERSONAL_TARGET[key];
   if (spec) {
     const values = sessions
-      .filter((s) => s.m.spendTokens >= PERSONAL_MIN_SPEND)
+      // "Your own best sessions prove this is reachable" is a claim about the
+      // user's conversations. A subagent run reports 0 on the main-loop-scoped
+      // hygiene ratios by construction (its denominator is empty), so leaving
+      // runs in would drag every personal target to 0 and tell the user their
+      // top quartile already runs perfectly.
+      .filter((s) => !s.isSidechain && s.m.spendTokens >= PERSONAL_MIN_SPEND)
       .map((s) => spec.metric(s.m))
       .sort((a, b) => a - b);
     if (values.length >= PERSONAL_MIN_SESSIONS) {
@@ -194,7 +199,7 @@ const SCORERS: Record<string, (s: SessionInfo) => { score: number; label: string
     label: `${fmtTokens(premiumTokensOf(s.m))} premium tok`,
   }),
   'context-bloat': (s) => {
-    const growth = s.isSidechain ? undefined : contextGrowthOf(s.events);
+    const growth = contextGrowthOf(s.events);
     return {
       score: growth && growth.ratio >= 2 ? bloatAvoidableTokens(s.events) : 0,
       label: `ctx ×${growth ? growth.ratio.toFixed(1) : '?'} · ${fmtTokens(bloatAvoidableTokens(s.events))} avoidable`,
@@ -238,7 +243,12 @@ function savingsUsd(
     case 'premium-misroute':
       return m.premiumWasteTokens * Math.max(0, rates.premium - rates.cheap);
     case 'cold-restarts': {
-      const saved = Math.max(0, m.coldRestartShare - (target?.value ?? 0)) * (m.inputTokens + m.cacheCreationTokens);
+      // Price against the SAME population the ratio is measured over
+      // (main-loop fresh-paid input), or the number is inflated by the whole
+      // fan-out. Pre-0.12 exports have no base and no subagent rows either,
+      // so their own fresh-paid input is the right one.
+      const base = m.coldRestartBaseTokens ?? m.inputTokens + m.cacheCreationTokens;
+      const saved = Math.max(0, m.coldRestartShare - (target?.value ?? 0)) * base;
       return saved * (rates.input - rates.cacheRead);
     }
     case 'context-bloat': {
@@ -273,8 +283,14 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
   return findings
     .map((f) => {
       const scorer = SCORERS[f.key];
+      // Evidence names sessions the user can go and change, so it ranks
+      // conversations only. Subagent runs outnumber them ~14:1 and each turn
+      // carries more absolute context, so leaving them in fills every "worst
+      // 3 sessions" line with anonymous runs nobody can act on — their spend
+      // is accounted for in the metric itself and in analyze's fan-out table.
       const evidence = scorer
         ? sessions
+            .filter((s) => !s.isSidechain)
             .map((s) => ({ s, ...scorer(s) }))
             .filter((x) => x.score > 0)
             .sort((a, b) => b.score - a.score)
@@ -382,7 +398,8 @@ function unitValuePerPoint(metric: MetricKey, m: Metrics, rates: BlendedRates): 
     case 'premiumWasteShare':
       return m.spendTokens * Math.max(0, rates.premium - rates.cheap);
     case 'coldRestartShare':
-      return (m.inputTokens + m.cacheCreationTokens) * (rates.input - rates.cacheRead);
+      // Same population as the ratio — see savingsUsd('cold-restarts').
+      return (m.coldRestartBaseTokens ?? m.inputTokens + m.cacheCreationTokens) * (rates.input - rates.cacheRead);
     default:
       return undefined; // thinkToCodeRatio, contextBloatShare: not $-translatable
   }

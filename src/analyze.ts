@@ -220,26 +220,26 @@ export interface DeepAnalysis {
 
 export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
   const stats = computeSessionStats(events);
+  // Every list here describes a CONVERSATION. Subagent runs outnumber them
+  // ~14:1 and would otherwise fill all eight rows of the tables that are the
+  // only session-level evidence the terminal and the --llm payload get; their
+  // spend is reported in the fan-out and by-type tables instead.
+  const conversations = stats.filter((s) => !s.isSidechain);
   return {
-    expensiveSessions: [...stats].sort((a, b) => b.spendTokens - a.spendTokens).slice(0, 8),
-    fixLoopSessions: stats
+    expensiveSessions: [...conversations].sort((a, b) => b.spendTokens - a.spendTokens).slice(0, 8),
+    fixLoopSessions: conversations
       .filter((s) => s.fixIterations >= 2)
       .sort((a, b) => b.fixIterations - a.fixIterations)
       .slice(0, 8),
-    contextHeavySessions: stats
-      // avgContextTokens is a bloat proxy, so this list follows the same rule
-      // as the trend: agent runs outnumber conversations ~14:1 and would
-      // otherwise fill every row with sessions nobody can compact.
-      .filter((s) => !s.isSidechain && s.turns >= 10)
+    contextHeavySessions: conversations
+      .filter((s) => s.turns >= 10)
       .sort((a, b) => b.avgContextTokens - a.avgContextTokens)
       .slice(0, 8),
-    bloatTrendSessions: stats
-      // Same exclusion as computeMetrics' trend denominator, for the same
-      // reason: you cannot compact a subagent run.
-      .filter((s) => !s.isSidechain && s.contextGrowth >= 2)
+    bloatTrendSessions: conversations
+      .filter((s) => s.contextGrowth >= 2)
       .sort((a, b) => b.contextGrowth - a.contextGrowth)
       .slice(0, 8),
-    coldRestartSessions: stats
+    coldRestartSessions: conversations
       .filter((s) => s.coldRestartTurns > 0)
       .sort((a, b) => b.coldRestartTokens - a.coldRestartTokens)
       .slice(0, 8),
@@ -274,9 +274,6 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
     coldRestartTokens: s.coldRestartTokens,
     durationMin: s.durationMin,
     dominant: s.dominant,
-    // A boolean, not a type name: the model must not read a 40-turn agent run
-    // as a 40-turn conversation and prescribe "compact this session".
-    isSidechain: s.isSidechain,
   });
   return {
     windowDays: days,
@@ -348,7 +345,7 @@ export const TRACKABLE_METRICS: MetricKey[] = [
 ];
 
 const METRIC_DEFINITIONS =
-  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Session rows with isSidechain=true are ONE subagent run, not a conversation: never advise compacting, restarting or batching them (they are spawned fresh and exit), and note that contextBloatShare and coldRestartShare are measured over main-loop sessions only. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
 
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.

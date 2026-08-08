@@ -209,7 +209,7 @@ test('the LLM payload carries the subagent share but never agent-type names', ()
   assert.ok(!json.includes('p1')); // no session ids either
 });
 
-test('the LLM payload marks subagent runs and keeps them out of the bloat lists', () => {
+test('session lists describe conversations only; fan-out is reported as an aggregate', () => {
   const turnsOf = (id: string, sidechain: boolean, n: number) =>
     Array.from({ length: n }, (_, i) =>
       makeStored({
@@ -223,12 +223,13 @@ test('the LLM payload marks subagent runs and keeps them out of the bloat lists'
     );
   const events = [...turnsOf('human', false, 12), ...Array.from({ length: 20 }, (_, i) => turnsOf(`a${i}`, true, 40)).flat()];
   const deep = deepAnalysis(events);
-  // Context-heavy is a bloat proxy: agent runs never appear, however chatty.
-  assert.ok(deep.contextHeavySessions.every((s) => !s.isSidechain));
-  assert.ok(deep.coldRestartSessions.every((s) => !s.isSidechain));
-  // Expensive sessions stay inclusive — a runaway run is worth seeing — but
-  // every emitted row says which kind it is.
-  const payload = buildLlmPayload(events, 30) as { expensiveSessions: Array<{ isSidechain: boolean }> };
-  assert.ok(payload.expensiveSessions.some((s) => s.isSidechain));
-  assert.ok(payload.expensiveSessions.every((s) => typeof s.isSidechain === 'boolean'));
+  // Every per-session list describes a conversation. 20 chatty agent runs
+  // against 1 conversation must not crowd out the only session-level
+  // evidence the terminal and the LLM payload get.
+  for (const list of [deep.expensiveSessions, deep.fixLoopSessions, deep.contextHeavySessions, deep.bloatTrendSessions, deep.coldRestartSessions]) {
+    assert.ok(list.every((s) => !s.isSidechain));
+  }
+  assert.equal(deep.expensiveSessions.length, 1);
+  // ...and the fan-out is still reported, as an aggregate.
+  assert.equal(deep.fanOutSessions[0].agents, 20);
 });

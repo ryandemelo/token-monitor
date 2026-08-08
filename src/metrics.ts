@@ -99,7 +99,9 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   for (const e of events) {
     sessions.add(rootSessionOf(e));
     if (e.is_sidechain) {
-      subagentSessions.add(e.session_id);
+      // A legacy inlined sidechain turn has no transcript of its own, so its
+      // session id IS the parent's — counting it would invent a run.
+      if (e.session_id !== e.parent_session_id) subagentSessions.add(e.session_id);
       subagentSpendTokens += e.input_tokens + e.output_tokens;
     } else {
       mainFreshPaid += e.input_tokens + e.cache_creation_tokens;
@@ -155,15 +157,19 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
       }
     }
 
+    // Both hygiene signals below describe the CONVERSATION, so they run over
+    // the group's main-loop turns only. Filtering per row rather than per
+    // group also handles the legacy transcripts that inlined sidechain turns
+    // under the main session id, where the group is mixed.
+    const mainRows = arr.some((e) => e.is_sidechain) ? arr.filter((e) => !e.is_sidechain) : arr;
+
     // Session hygiene: a gap past the cache TTL means this turn re-paid its
     // context as fresh input / a new cache write instead of a cheap read.
     // Subagent runs sit out both sides of this ratio — see coldRestartShare.
-    if (!arr[0].is_sidechain) {
-      for (let i = 1; i < arr.length; i++) {
-        if (Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
-          coldRestartTurns++;
-          coldRestartTokens += arr[i].input_tokens + arr[i].cache_creation_tokens;
-        }
+    for (let i = 1; i < mainRows.length; i++) {
+      if (Date.parse(mainRows[i].ts) - Date.parse(mainRows[i - 1].ts) > CACHE_TTL_MS) {
+        coldRestartTurns++;
+        coldRestartTokens += mainRows[i].input_tokens + mainRows[i].cache_creation_tokens;
       }
     }
 
@@ -174,7 +180,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     // the remedy for bloat is to compact or restart, and a subagent is spawned
     // fresh, does one job, and exits. (Their spend still counts everywhere
     // else — this is about which sessions the ratio describes.)
-    const growth = arr[0].is_sidechain ? undefined : contextGrowthOf(arr);
+    const growth = mainRows.length ? contextGrowthOf(mainRows) : undefined;
     if (growth !== undefined) {
       trendSessions++;
       if (growth.ratio >= BLOAT_GROWTH && growth.lateFreshShare >= BLOAT_FRESH_SHARE) bloatedSessions++;

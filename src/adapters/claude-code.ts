@@ -35,6 +35,13 @@ interface ClaudeLine {
   /** Subagent transcripts only: the run's own id, and the type that spawned it. */
   agentId?: string;
   attributionAgent?: string;
+  /**
+   * Current Claude Code writes this false on every main-loop line and true in
+   * agent files. Older versions inlined sidechain turns into the main
+   * transcript with this flag set; honouring it keeps those turns out of the
+   * main-loop-scoped hygiene metrics.
+   */
+  isSidechain?: boolean;
   message?: {
     model?: string;
     usage?: {
@@ -171,6 +178,13 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
       ev.isSidechain = true;
       ev.parentSessionId = opts.sidechain.parentSessionId;
       if (typeof d.attributionAgent === 'string' && d.attributionAgent) ev.agentType = d.attributionAgent;
+    } else if (d.isSidechain === true) {
+      // Legacy inline format: the turn belongs to a fan-out even though it
+      // lives in the main transcript. It keeps the main session's id (there
+      // is no separate transcript to key on) but must not count as main-loop
+      // context for the hygiene ratios.
+      ev.isSidechain = true;
+      ev.parentSessionId = ev.sessionId;
     }
     ev.activity = classify(ev);
     turns.push({ ev, cwd: d.cwd });
@@ -303,7 +317,12 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
     }
 
     for (const ent of entries) {
-      if (!ent.isDirectory()) continue;
+      // Symlinked session directories count too, for the same archive-and-
+      // link workflow the main-transcript scan supports: collecting a
+      // session's main loop while silently dropping its whole fan-out is the
+      // exact undercount this adapter exists to fix. The cycle guard lives in
+      // agentTranscripts, which only recurses into real directories.
+      if (ent.isFile()) continue;
       const subRoot = join(dirPath, ent.name, 'subagents');
       if (!existsSync(subRoot)) continue;
       const parentSessionId = ent.name; // the session directory IS the session id

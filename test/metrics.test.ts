@@ -187,21 +187,22 @@ test('cold restarts exclude subagent runs on BOTH sides of the ratio', () => {
   assert.equal(alone.coldRestartTokens, 300);
   assert.equal(alone.coldRestartShare, 0.75); // 300 re-paid of 400 fresh-paid
 
-  // A fan-out of gap-free runs carrying far more fresh input must not move it:
-  // an agent run is a burst that never idles, so counting its input in the
-  // denominator would push a real hygiene problem below its finding threshold.
+  // A fan-out carrying far more fresh input must not move it, and its OWN
+  // gaps must not enter the numerator either — each run below has a 1-hour
+  // gap between its two turns, which would count as a cold restart if the
+  // numerator guard were dropped.
   const withFanOut = computeMetrics([
     ...human,
-    ...Array.from({ length: 10 }, (_, i) =>
+    ...Array.from({ length: 10 }, (_, i) => [
       makeStored({
-        session_id: `a${i}`,
-        parent_session_id: 's1',
-        is_sidechain: 1,
-        ts: `2026-06-01T12:0${i}:00Z`,
-        input_tokens: 1000,
-        cache_creation_tokens: 0,
+        session_id: `a${i}`, parent_session_id: 's1', is_sidechain: 1,
+        ts: `2026-06-01T12:0${i}:00Z`, input_tokens: 1000, cache_creation_tokens: 0,
       }),
-    ),
+      makeStored({
+        session_id: `a${i}`, parent_session_id: 's1', is_sidechain: 1,
+        ts: `2026-06-01T13:0${i}:00Z`, input_tokens: 1000, cache_creation_tokens: 0,
+      }),
+    ]).flat(),
   ]);
   assert.equal(withFanOut.coldRestartTurns, 1);
   assert.equal(withFanOut.coldRestartShare, 0.75);

@@ -96,12 +96,15 @@ export function structuredFindings(m: Metrics): Finding[] {
       message: `${m.bloatedSessions} of ${m.trendSessions} long sessions grow their context ≥2× without cache reads keeping pace — start a fresh session or compact at task boundaries before the context balloons.`,
     });
   }
-  if (m.coldRestartShare >= 0.2 && m.spendTokens > 100_000) {
+  // Volume gate on MAIN-LOOP spend: the ratio is measured over main-loop
+  // fresh input, so a 20k-token conversation must not clear the bar on the
+  // back of 500k spent by its subagents.
+  if (m.coldRestartShare >= 0.2 && m.spendTokens - (m.subagentSpendTokens ?? 0) > 100_000) {
     out.push({
       key: 'cold-restarts',
       metric: 'coldRestartShare',
       direction: 'down',
-      message: `${(m.coldRestartShare * 100).toFixed(0)}% of fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after the ~5-min cache TTL. Batch prompts within the cache window, or split long-idle work into new sessions.`,
+      message: `${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after the ~5-min cache TTL. Batch prompts within the cache window, or split long-idle work into new sessions.`,
     });
   }
   if (m.premiumWasteShare >= 0.3 && m.spendTokens > 100_000) {
