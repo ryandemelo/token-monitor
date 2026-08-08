@@ -33,20 +33,54 @@ export function openDb(path: string = DEFAULT_DB): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
   `);
-  // Migrate dbs created before project-family relabeling: project_raw keeps
-  // the pre-relabel label so every relabel is auditable and reversible in one
-  // statement (UPDATE events SET project = project_raw WHERE project_raw IS
-  // NOT NULL). Mirrors the followthrough `origin` PRAGMA-guard precedent.
-  const cols = db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === 'project_raw')) {
+  migrate(db);
+  return db;
+}
+
+/**
+ * Additive column migrations, PRAGMA-guarded (the followthrough `origin`
+ * precedent). Each is nullable or has a constant default, so an old row keeps
+ * a truthful value without a backfill:
+ *
+ * - `project_raw` — the pre-relabel project label, so every project-family
+ *   relabel is auditable and reversible in one statement (UPDATE events SET
+ *   project = project_raw WHERE project_raw IS NOT NULL).
+ * - `is_sidechain` / `parent_session_id` / `agent_type` — subagent accounting.
+ *   Defaulting old rows to 0/NULL is correct rather than merely convenient:
+ *   before this version `collect` never read a subagent transcript, so every
+ *   pre-existing row genuinely IS a main-loop turn. The missing subagent rows
+ *   backfill themselves on the next collect from the transcripts still on disk.
+ */
+function migrate(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  const wanted: Array<[string, string]> = [
+    ['project_raw', 'TEXT'],
+    ['is_sidechain', 'INTEGER NOT NULL DEFAULT 0'],
+    ['parent_session_id', 'TEXT'],
+    ['agent_type', 'TEXT'],
+  ];
+  // relabelEvents and syncIntentProjects look rows up one session at a time.
+  // Without this every collect ran a full table scan PER SESSION — survivable
+  // at ~150 sessions, minutes once subagent runs make it thousands (measured
+  // 8m16s -> 5.2s on a 165k-row database). Same try/catch as the ALTERs
+  // below: a DB that can't be written must still open for reading.
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_events_session ON events(source, session_id)`);
+  } catch {
+    /* read-only DB: reads still work, the index appears on the first writable open */
+  }
+  for (const [name, type] of wanted) {
+    if (cols.has(name)) continue;
     try {
-      db.exec(`ALTER TABLE events ADD COLUMN project_raw TEXT`);
+      db.exec(`ALTER TABLE events ADD COLUMN ${name} ${type}`);
     } catch {
-      // Read-only pre-0.11 DB: skip the migration so read paths still work;
-      // the column appears on the first writable open.
+      // Read-only or otherwise locked older DB: skip the migration so read
+      // paths still work (loadEvents substitutes defaults for columns that
+      // aren't there); the column appears on the first writable open.
     }
   }
-  return db;
 }
 
 export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
@@ -54,8 +88,9 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
     INSERT OR IGNORE INTO events
       (source, event_key, session_id, project, ts, model,
        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
-       tools, has_thinking, is_error, git_branch, activity)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       tools, has_thinking, is_error, git_branch, activity,
+       is_sidechain, parent_session_id, agent_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let inserted = 0;
   db.exec('BEGIN');
@@ -66,6 +101,7 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
         e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.thinkingTokens,
         JSON.stringify(e.tools), e.hasThinking ? 1 : 0, e.isError ? 1 : 0,
         e.gitBranch ?? null, e.activity ?? 'conversation',
+        e.isSidechain ? 1 : 0, e.parentSessionId ?? null, e.agentType ?? null,
       );
       inserted += Number(res.changes);
     }
@@ -93,6 +129,12 @@ export interface StoredEvent {
   has_thinking: number;
   is_error: number;
   activity: string;
+  /** 1 when the turn came from a subagent transcript (see UsageEvent.isSidechain). */
+  is_sidechain: number;
+  /** Spawning session for a sidechain turn; NULL for main-loop turns. */
+  parent_session_id: string | null;
+  /** Subagent type label; NULL for main-loop turns. Never leaves the machine. */
+  agent_type: string | null;
 }
 
 /**
@@ -305,9 +347,17 @@ export function loadEvents(
     where.push(`source = ?`);
     params.push(opts.source);
   }
+  // Subagent columns are selected defensively: a DB whose migration couldn't
+  // run (read-only, older binary holding it) must still read, and the defaults
+  // it substitutes are the truth for pre-subagent rows anyway.
+  const cols = new Set(
+    (db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  const col = (name: string, fallback: string) => (cols.has(name) ? name : `${fallback} AS ${name}`);
   const sql = `SELECT source, session_id, project, ts, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
-      tools, has_thinking, is_error, activity
+      tools, has_thinking, is_error, activity,
+      ${col('is_sidechain', '0')}, ${col('parent_session_id', 'NULL')}, ${col('agent_type', 'NULL')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
 }

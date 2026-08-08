@@ -141,3 +141,90 @@ test('anthropic models are priced exactly, unknown models counted as unpriced', 
   assert.equal(unknown.costUsd, 0);
   assert.equal(unknown.costUnpricedTokens, 200);
 });
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('subagent turns count as spend but not as extra sessions', () => {
+  const m = computeMetrics([
+    makeStored({ session_id: 's1', input_tokens: 400, output_tokens: 100 }),
+    makeStored({ session_id: 'a1', parent_session_id: 's1', is_sidechain: 1, input_tokens: 60, output_tokens: 40 }),
+    makeStored({ session_id: 'a2', parent_session_id: 's1', is_sidechain: 1, input_tokens: 60, output_tokens: 40 }),
+    makeStored({ session_id: 'a2', parent_session_id: 's1', is_sidechain: 1, input_tokens: 30, output_tokens: 70 }),
+  ]);
+  assert.equal(m.sessions, 1); // one conversation, not four
+  assert.equal(m.subagentSessions, 2); // ...that fanned out into two runs
+  assert.equal(m.spendTokens, 800);
+  assert.equal(m.subagentSpendTokens, 300);
+  assert.equal(m.subagentShare, 0.375);
+});
+
+test('a window with no fan-out reports a zero subagent share, not NaN', () => {
+  const m = computeMetrics([makeStored({ session_id: 's1' })]);
+  assert.equal(m.subagentSessions, 0);
+  assert.equal(m.subagentShare, 0);
+  assert.equal(computeMetrics([]).subagentShare, 0);
+});
+
+test('per-session hygiene math stays per-transcript, not per root session', () => {
+  // Two conversations interleaved in time. Grouped per transcript each shows
+  // one gap; merged on a single timeline they would show three.
+  const m = computeMetrics([
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:00:00Z' }),
+    makeStored({ session_id: 's2', ts: '2026-06-01T10:20:00Z' }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:40:00Z' }),
+    makeStored({ session_id: 's2', ts: '2026-06-01T11:00:00Z' }),
+  ]);
+  assert.equal(m.coldRestartTurns, 2);
+});
+
+test('cold restarts exclude subagent runs on BOTH sides of the ratio', () => {
+  const human = [
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:00:00Z', input_tokens: 100, cache_creation_tokens: 0 }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T11:00:00Z', input_tokens: 300, cache_creation_tokens: 0 }),
+  ];
+  const alone = computeMetrics(human);
+  assert.equal(alone.coldRestartTurns, 1);
+  assert.equal(alone.coldRestartTokens, 300);
+  assert.equal(alone.coldRestartShare, 0.75); // 300 re-paid of 400 fresh-paid
+
+  // A fan-out carrying far more fresh input must not move it, and its OWN
+  // gaps must not enter the numerator either — each run below has a 1-hour
+  // gap between its two turns, which would count as a cold restart if the
+  // numerator guard were dropped.
+  const withFanOut = computeMetrics([
+    ...human,
+    ...Array.from({ length: 10 }, (_, i) => [
+      makeStored({
+        session_id: `a${i}`, parent_session_id: 's1', is_sidechain: 1,
+        ts: `2026-06-01T12:0${i}:00Z`, input_tokens: 1000, cache_creation_tokens: 0,
+      }),
+      makeStored({
+        session_id: `a${i}`, parent_session_id: 's1', is_sidechain: 1,
+        ts: `2026-06-01T13:0${i}:00Z`, input_tokens: 1000, cache_creation_tokens: 0,
+      }),
+    ]).flat(),
+  ]);
+  assert.equal(withFanOut.coldRestartTurns, 1);
+  assert.equal(withFanOut.coldRestartShare, 0.75);
+  assert.equal(withFanOut.coldRestartBaseTokens, 400);
+});
+
+test('subagent runs are excluded from the context-bloat denominator', () => {
+  const growing = (session: string, sidechain: boolean) =>
+    Array.from({ length: 8 }, (_, i) =>
+      makeStored({
+        session_id: session,
+        is_sidechain: sidechain ? 1 : 0,
+        parent_session_id: sidechain ? 'p' : null,
+        ts: `2026-06-01T10:0${i}:00Z`,
+        input_tokens: 1000 * (i + 1),
+        cache_read_tokens: 0,
+      }),
+    );
+  const m = computeMetrics([...growing('human', false), ...growing('a1', true), ...growing('a2', true)]);
+  // One conversation is measurable for bloat; the two agent runs are not
+  // sessions anyone can compact, so they never dilute the ratio.
+  assert.equal(m.trendSessions, 1);
+  assert.equal(m.bloatedSessions, 1);
+  assert.equal(m.contextBloatShare, 1);
+});

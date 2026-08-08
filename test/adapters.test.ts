@@ -9,7 +9,7 @@ import { collectCursor } from '../src/adapters/cursor.js';
 import { collectAntigravity } from '../src/adapters/antigravity.js';
 import { collectCopilot } from '../src/adapters/copilot.js';
 import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 // dist/test/ -> repo root -> test/fixtures
@@ -302,4 +302,142 @@ test('claude-code: two sessions in one dir label independently', () => {
   assert.equal(byKey.get('a1'), 'repo-a');
   assert.equal(byKey.get('a2'), 'repo-a');
   assert.equal(byKey.get('b1'), 'repo-b');
+});
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+/**
+ * One line of a subagent transcript. Mirrors the real shape: `sessionId` is
+ * the PARENT's (the agent's own identity lives in `agentId`), `isSidechain` is
+ * true, and `attributionAgent` names the type that was spawned.
+ */
+function agentLine(
+  uuid: string,
+  parentSessionId: string,
+  agentId: string,
+  cwd: string,
+  agentType = 'general-purpose',
+): string {
+  return JSON.stringify({
+    type: 'assistant', uuid, sessionId: parentSessionId, agentId, isSidechain: true,
+    attributionAgent: agentType, cwd, timestamp: '2026-06-01T10:05:00.000Z',
+    message: { model: 'claude-opus-4-7', usage: { input_tokens: 40, output_tokens: 60 }, content: [] },
+  });
+}
+
+function writeAgent(dir: string, name: string, lines: string[]): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), lines.join('\n'));
+}
+
+test('claude-code: subagent transcripts are collected, flagged and parent-linked', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-sub-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's1.jsonl'), claudeLine('m1', 's1', '/w/dev/repo-a'));
+  writeAgent(join(dir, 's1', 'subagents'), 'agent-aaa111.jsonl', [
+    agentLine('g1', 's1', 'aaa111', '/w/dev/repo-a'),
+    agentLine('g2', 's1', 'aaa111', '/w/dev/repo-a'),
+  ]);
+  // Nested fan-out: workflow runs land a level deeper, under the same session.
+  writeAgent(join(dir, 's1', 'subagents', 'workflows', 'wf_1'), 'agent-bbb222.jsonl', [
+    agentLine('g3', 's1', 'bbb222', '/w/dev/repo-a', 'Explore'),
+  ]);
+
+  const { events, result } = collectClaudeCode(base);
+  assert.equal(events.length, 4); // 1 main + 3 agent turns that were invisible before
+  assert.equal(result.filesScanned, 3);
+
+  const main = events.find((e) => e.eventKey === 'm1')!;
+  assert.equal(main.isSidechain, undefined);
+  assert.equal(main.parentSessionId, undefined);
+
+  const agents = events.filter((e) => e.eventKey !== 'm1');
+  for (const e of agents) {
+    assert.equal(e.isSidechain, true);
+    assert.equal(e.parentSessionId, 's1'); // links back to the spawning session
+    assert.equal(e.project, 'repo-a');
+  }
+  // Own session id per run — NOT the parent's, which is what the file says.
+  assert.deepEqual(
+    agents.map((e) => e.sessionId).sort(),
+    ['aaa111', 'aaa111', 'bbb222'],
+  );
+  assert.equal(agents.find((e) => e.eventKey === 'g3')!.agentType, 'Explore');
+});
+
+test('claude-code: an isolated agent inherits the parent project, not its worktree', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-sub-wt-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's2.jsonl'), claudeLine('m1', 's2', '/w/dev/myapp'));
+  // isolation: 'worktree' puts the agent in a scratch checkout whose basename
+  // would otherwise mint a pseudo-project.
+  writeAgent(join(dir, 's2', 'subagents'), 'agent-ccc333.jsonl', [
+    agentLine('g1', 's2', 'ccc333', '/tmp/wt/myapp-agent-7'),
+  ]);
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 2);
+  for (const e of events) assert.equal(e.project, 'myapp');
+});
+
+test('claude-code: orphaned agent files fall back to their own cwd', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-sub-orphan-'));
+  const dir = join(base, 'enc');
+  // The driver transcript rotated away; only its subagents survive on disk.
+  writeAgent(join(dir, 's3', 'subagents'), 'agent-ddd444.jsonl', [
+    agentLine('g1', 's3', 'ddd444', '/w/dev/repo-z'),
+  ]);
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].project, 'repo-z');
+  assert.equal(events[0].parentSessionId, 's3');
+});
+
+test('claude-code: a subagent prompt is never carried as user intent', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-sub-intent-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  const userLine = (sessionId: string, text: string) =>
+    JSON.stringify({ type: 'user', sessionId, timestamp: '2026-06-01T10:00:00.000Z', message: { content: text } });
+  writeFileSync(join(dir, 's4.jsonl'), [
+    userLine('s4', 'ship the invoice importer'),
+    claudeLine('m1', 's4', '/w/dev/repo-b'),
+  ].join('\n'));
+  writeAgent(join(dir, 's4', 'subagents'), 'agent-eee555.jsonl', [
+    userLine('s4', 'You are a subagent. Grep the repo for retry handling and report back.'),
+    agentLine('g1', 's4', 'eee555', '/w/dev/repo-b'),
+  ]);
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.find((e) => e.eventKey === 'm1')!.intentText, 'ship the invoice importer');
+  // Machine-written briefs must not become the human's task fingerprint.
+  assert.equal(events.find((e) => e.eventKey === 'g1')!.intentText, undefined);
+});
+
+test('claude-code: a malformed agent file costs its own turns, not the collect', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-sub-bad-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 's5.jsonl'), claudeLine('m1', 's5', '/w/dev/repo-c'));
+  writeAgent(join(dir, 's5', 'subagents'), 'agent-fff666.jsonl', ['{"type":"assistant" not json', '']);
+  writeAgent(join(dir, 's5', 'subagents'), 'agent-ggg777.jsonl', [agentLine('g1', 's5', 'ggg777', '/w/dev/repo-c')]);
+  const { events } = collectClaudeCode(base);
+  assert.deepEqual(events.map((e) => e.eventKey).sort(), ['g1', 'm1']);
+});
+
+test('claude-code: a symlinked transcript is still collected', () => {
+  // Archived sessions symlinked back into place: Dirent types are lstat-based,
+  // so an isFile() gate would drop the whole session with no note.
+  const base = mkdtempSync(join(tmpdir(), 'cc-symlink-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  const archive = join(base, 'archive.jsonl');
+  writeFileSync(archive, claudeLine('s61', 's6', '/w/dev/repo-arch'));
+  symlinkSync(archive, join(dir, 's6.jsonl'));
+  // A dangling link must be skipped, not thrown on.
+  symlinkSync(join(base, 'gone.jsonl'), join(dir, 's7.jsonl'));
+
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].project, 'repo-arch');
 });

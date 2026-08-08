@@ -39,3 +39,30 @@ test('every model seen by the adapters resolves to some row or is knowingly unpr
     assert.ok(!PRICES.some((p) => p.match.test(knowinglyUnpriced)), `${knowinglyUnpriced} unexpectedly priced`);
   }
 });
+
+test('Claude 5 family is priced, including the 1M-context variant id', () => {
+  // claude-opus-5 / claude-sonnet-5 read as unpriced before these rows existed,
+  // which showed up as $0.00 cost columns on real data.
+  for (const [model, input, output] of [
+    ['claude-opus-5', 5, 25],
+    ['claude-opus-5[1m]', 5, 25],
+    ['claude-sonnet-5', 3, 15],
+    ['claude-fable-5', 10, 50],
+    ['claude-haiku-4-5-20251001', 1, 5],
+  ] as const) {
+    const c = costOf(model, 1_000_000, 0, 0, 0);
+    assert.equal(c.priced, true, `${model} must be priced`);
+    assert.ok(Math.abs(c.usd - input) < 1e-9, `${model} input rate`);
+    assert.ok(Math.abs(costOf(model, 0, 1_000_000, 0, 0).usd - output) < 1e-9, `${model} output rate`);
+    // Cache read is 10% of input; a 5-minute cache write is 1.25x.
+    assert.ok(Math.abs(costOf(model, 0, 0, 1_000_000, 0).usd - input * 0.1) < 1e-9, `${model} cache read`);
+    assert.ok(Math.abs(costOf(model, 0, 0, 0, 1_000_000).usd - input * 1.25) < 1e-9, `${model} cache write`);
+  }
+});
+
+test('generation-specific rows win over older ones', () => {
+  // /claude-opus-4/ must not swallow claude-opus-5, and vice versa.
+  assert.equal(costOf('claude-opus-4-8', 1_000_000, 0, 0, 0).usd, 5);
+  assert.equal(costOf('claude-sonnet-4-5', 1_000_000, 0, 0, 0).usd, 3);
+  assert.equal(costOf('claude-sonnet-5', 1_000_000, 0, 0, 0).usd, 3);
+});

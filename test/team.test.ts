@@ -206,3 +206,25 @@ test('signed export with categories round-trips verification; tampering fails', 
   tampered.categories[0].terms[0] = 'forged';
   assert.equal(verifyObject(tampered).ok, false);
 });
+
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('mergeMetrics recombines coldRestartShare over main-loop input, incl. pre-0.12 exports', () => {
+  const modern = computeMetrics([
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:00:00Z', input_tokens: 100, cache_creation_tokens: 0 }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T11:00:00Z', input_tokens: 300, cache_creation_tokens: 0 }),
+    // Fan-out with lots of fresh input and no gaps: must not enter the base.
+    makeStored({ session_id: 'a1', parent_session_id: 's1', is_sidechain: 1, ts: '2026-06-01T12:00:00Z', input_tokens: 5000, cache_creation_tokens: 0 }),
+  ]);
+  assert.equal(modern.coldRestartBaseTokens, 400);
+  assert.equal(modern.coldRestartShare, 0.75);
+
+  // A pre-0.12 member export carries no base and no subagent rows at all, so
+  // its own fresh-paid input is the correct denominator.
+  const legacy = { ...modern, coldRestartBaseTokens: undefined as unknown as number, inputTokens: 1000, cacheCreationTokens: 0, coldRestartTokens: 250 };
+  const merged = mergeMetrics([modern, legacy]);
+  assert.equal(merged.coldRestartBaseTokens, 1400); // 400 main-loop + 1000 legacy
+  assert.equal(merged.coldRestartTokens, 550);
+  assert.ok(Math.abs(merged.coldRestartShare - 550 / 1400) < 1e-9);
+});

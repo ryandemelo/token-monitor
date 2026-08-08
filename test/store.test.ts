@@ -138,3 +138,93 @@ test('syncIntentProjects is source-scoped: a cross-source session_id collision c
   assert.equal(syncIntentProjects(db), 0);
   assert.equal(loadIntents(db, ['shared']).get('shared')!.project, 'proc');
 });
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('openDb migrates a pre-0.12 db (no subagent columns) and defaults old rows to main-loop', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'tm-mig12-')), 'old.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE events (
+    id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_key TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, ts TEXT NOT NULL,
+    model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+    thinking_tokens INTEGER NOT NULL, tools TEXT NOT NULL, has_thinking INTEGER NOT NULL,
+    is_error INTEGER NOT NULL, git_branch TEXT, activity TEXT NOT NULL, project_raw TEXT,
+    UNIQUE(source, event_key))`);
+  legacy.prepare(`INSERT INTO events
+    (source, event_key, session_id, project, ts, model, input_tokens, output_tokens,
+     cache_read_tokens, cache_creation_tokens, thinking_tokens, tools, has_thinking, is_error, activity)
+    VALUES ('claude-code','pre1','s0','p0','2026-06-01T00:00:00.000Z','m',1,1,0,0,0,'[]',0,0,'coding')`).run();
+  legacy.close();
+
+  const db = openDb(path);
+  const cols = (db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>).map((c) => c.name);
+  for (const c of ['is_sidechain', 'parent_session_id', 'agent_type']) assert.ok(cols.includes(c));
+  // Pre-existing rows are genuinely main-loop turns: collect never read a
+  // subagent transcript before this version, so 0/NULL is true, not a guess.
+  const [row] = loadEvents(db);
+  assert.equal(row.is_sidechain, 0);
+  assert.equal(row.parent_session_id, null);
+  openDb(path); // second open: ALTERs are not re-run
+});
+
+test('loadEvents still reads a db whose subagent migration never ran', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'tm-nomig-')), 'old.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE events (
+    id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_key TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, ts TEXT NOT NULL,
+    model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+    thinking_tokens INTEGER NOT NULL, tools TEXT NOT NULL, has_thinking INTEGER NOT NULL,
+    is_error INTEGER NOT NULL, git_branch TEXT, activity TEXT NOT NULL,
+    UNIQUE(source, event_key));
+    INSERT INTO events (source, event_key, session_id, project, ts, model, input_tokens,
+      output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, tools,
+      has_thinking, is_error, activity)
+    VALUES ('claude-code','x','s','p','2026-06-01T00:00:00.000Z','m',1,1,0,0,0,'[]',0,0,'coding')`);
+  // Read the un-migrated handle directly, as a locked/read-only DB would be.
+  const rows = loadEvents(legacy);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].is_sidechain, 0);
+  assert.equal(rows[0].agent_type, null);
+});
+
+test('subagent fields survive the insert/load round trip and dedup by event key', () => {
+  const db = openDb(':memory:');
+  const events = [
+    makeEvent({ eventKey: 'm1', sessionId: 's1' }),
+    makeEvent({ eventKey: 'g1', sessionId: 'a1', isSidechain: true, parentSessionId: 's1', agentType: 'Explore' }),
+  ];
+  assert.equal(insertEvents(db, events), 2);
+  assert.equal(insertEvents(db, events), 0);
+  const rows = loadEvents(db);
+  const agent = rows.find((r) => r.session_id === 'a1')!;
+  assert.equal(agent.is_sidechain, 1);
+  assert.equal(agent.parent_session_id, 's1');
+  assert.equal(agent.agent_type, 'Explore');
+  assert.equal(rows.find((r) => r.session_id === 's1')!.is_sidechain, 0);
+});
+
+test('the session index exists on new and pre-existing dbs', () => {
+  // relabelEvents runs one UPDATE per session; without this index each one is
+  // a full table scan, which subagent runs multiply by the fan-out factor.
+  const path = join(mkdtempSync(join(tmpdir(), 'tm-idx-')), 'db.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE events (
+    id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_key TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, ts TEXT NOT NULL,
+    model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+    thinking_tokens INTEGER NOT NULL, tools TEXT NOT NULL, has_thinking INTEGER NOT NULL,
+    is_error INTEGER NOT NULL, git_branch TEXT, activity TEXT NOT NULL,
+    UNIQUE(source, event_key))`);
+  legacy.close();
+  for (const db of [openDb(path), openDb(':memory:')]) {
+    const plan = db.prepare(
+      `EXPLAIN QUERY PLAN UPDATE events SET project = 'x' WHERE source = 'claude-code' AND session_id = 's'`,
+    ).all() as Array<{ detail: string }>;
+    assert.match(plan.map((r) => r.detail).join(' '), /idx_events_session/);
+  }
+});

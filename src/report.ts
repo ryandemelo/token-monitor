@@ -36,6 +36,17 @@ function fmtCost(m: Metrics): string {
   return s;
 }
 
+/**
+ * Subagent clause for the signals line, empty when no fan-out was collected —
+ * five of six sources never produce sidechain turns, and a permanent "0%" on
+ * their reports would be noise pretending to be a measurement.
+ */
+export function fmtSubagents(m: Metrics): string {
+  if (!m.subagentSessions) return '';
+  const runs = m.subagentSessions === 1 ? '1 run' : `${m.subagentSessions} runs`;
+  return `  ·  subagents ${(m.subagentShare * 100).toFixed(0)}% of spend (${runs})`;
+}
+
 function bar(share: number, width = 24): string {
   const filled = Math.round(share * width);
   return '█'.repeat(filled) + DIM + '░'.repeat(width - filled) + RESET;
@@ -106,7 +117,7 @@ export function renderReport(
     `\n  ${DIM}rework ratio ${(m.reworkRatio * 100).toFixed(1)}%  ·  think:code ${m.thinkToCodeRatio.toFixed(2)}  ·  ${m.errorEvents} turns hit tool errors${RESET}`,
   );
   out.push(
-    `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${RESET}`,
+    `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${fmtSubagents(m)}${RESET}`,
   );
   if (opts.categorize) {
     out.push(

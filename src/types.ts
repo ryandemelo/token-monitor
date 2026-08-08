@@ -44,6 +44,21 @@ export interface UsageEvent {
   gitBranch?: string;
   activity?: Activity;
   /**
+   * Turn came from a subagent (sidechain) transcript rather than the main
+   * loop. Claude Code writes each Task/Agent run to its own file under
+   * `<session>/subagents/**`; those turns are real spend the main transcript
+   * never mentions.
+   */
+  isSidechain?: boolean;
+  /** The session that spawned this one — set only on sidechain turns. */
+  parentSessionId?: string;
+  /**
+   * Subagent type as the harness labelled it ("general-purpose", "Explore").
+   * Local-only: it can name a user's private custom agent, so it never enters
+   * an export or an LLM payload.
+   */
+  agentType?: string;
+  /**
    * The user's prompt text for this turn, carried in-memory ONLY for `categorize`
    * to derive an on-device intent fingerprint. Never persisted: insertEvents has
    * no column for it. Redaction happens in intent.ts before anything is stored.

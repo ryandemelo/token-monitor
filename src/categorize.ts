@@ -18,7 +18,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { loadEvents, recordIntents, loadIntents } from './store.js';
 import type { StoredEvent, IntentRow } from './store.js';
-import { groupBy, parseTools } from './metrics.js';
+import { groupByRootSession, parseTools } from './metrics.js';
 import { costOf } from './pricing.js';
 import { ADAPTERS } from './adapters/index.js';
 import type { Source } from './types.js';
@@ -63,6 +63,13 @@ interface SessionAgg {
   tools: string[];
 }
 
+/**
+ * Aggregate ONE task: a session's own turns plus the subagent runs it spawned
+ * (groupByRootSession). Fan-out cost belongs to the task that delegated it —
+ * otherwise a category's $ silently omits whatever the agents spent, and a
+ * duplicate-work finding under-prices itself by exactly the delegated share.
+ * The session id stays the human session's, so the frozen intent still joins.
+ */
 function aggregateSession(sessionId: string, evs: StoredEvent[]): SessionAgg {
   let tokens = 0, cost = 0, estimated = false;
   const tools = new Set<string>();
@@ -128,7 +135,7 @@ export function runCategorize(
   const events = loadEvents(db, { days: opts.days, project: opts.project, source: opts.source });
   const days = opts.days ?? 30;
 
-  const aggs = [...groupBy(events, 'session_id').entries()].map(([id, evs]) => aggregateSession(id, evs));
+  const aggs = [...groupByRootSession(events).entries()].map(([id, evs]) => aggregateSession(id, evs));
   if (aggs.length === 0) {
     return { days, totalSessions: 0, textSessions: 0, categories: [], duplicates: [], skillCandidates: [] };
   }
@@ -254,7 +261,7 @@ export function categorizeSummary(
 ): CategorizeSummary | undefined {
   const events = loadEvents(db, { days: opts.days, project: opts.project, source: opts.source });
   if (events.length === 0) return undefined;
-  const aggs = [...groupBy(events, 'session_id').entries()].map(([id, evs]) => aggregateSession(id, evs));
+  const aggs = [...groupByRootSession(events).entries()].map(([id, evs]) => aggregateSession(id, evs));
   const frozen = loadIntents(db, aggs.map((a) => a.sessionId));
   if (frozen.size === 0) return undefined;
   const { duplicates } = buildResult(aggs, frozen, opts.days ?? 30, opts);

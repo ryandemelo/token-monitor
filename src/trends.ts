@@ -42,6 +42,11 @@ export function trendRows(now: Metrics, prev: Metrics): TrendRow[] {
     { label: 'Cold restarts', prev: prev.coldRestartShare, now: now.coldRestartShare, fmt: 'pct', good: 'down' },
     { label: 'Premium on exploration/chat', prev: prev.premiumWasteShare, now: now.premiumWasteShare, fmt: 'pct', good: 'down' },
     { label: 'Retry loops', prev: prev.retryShare, now: now.retryShare, fmt: 'pct', good: 'down' },
+    // Volume, not verdict: delegating more is neither good nor bad on its own,
+    // so no `good` direction. Appears only once a window has fan-out in it.
+    ...(now.subagentSessions || prev.subagentSessions
+      ? [{ label: 'Subagent share', prev: prev.subagentShare, now: now.subagentShare, fmt: 'pct' } as TrendRow]
+      : []),
   ];
 }
 

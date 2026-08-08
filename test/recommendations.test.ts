@@ -196,3 +196,36 @@ test('low-think-code stays unquantified but keeps its message and key', () => {
   assert.equal(rec.savingsUsdPerMonth, undefined);
   assert.equal(fmtSavings(rec), undefined);
 });
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('context-bloat savings and evidence ignore subagent runs', () => {
+  // A session whose late-half context grows sharply and is paid fresh.
+  const bloated = (id: string, sidechain: boolean) =>
+    Array.from({ length: 8 }, (_, i) =>
+      makeStored({
+        session_id: id,
+        is_sidechain: sidechain ? 1 : 0,
+        parent_session_id: sidechain ? 'human' : null,
+        project: sidechain ? 'agentville' : 'humanville',
+        ts: `2026-06-01T10:0${i}:00Z`,
+        input_tokens: i < 4 ? 100 : 50_000,
+        output_tokens: 0,
+      }),
+    );
+  // The finding needs >=3 measurable conversations to fire at all.
+  const human = [...bloated('h1', false), ...bloated('h2', false), ...bloated('h3', false)];
+  const alone = computeMetrics(human);
+  const before = enrichFindings(human, alone, 30).find((r) => r.key === 'context-bloat');
+  assert.ok(before, 'expected a context-bloat finding');
+
+  // Twenty identically-shaped agent runs must not multiply the estimate or
+  // take over the evidence: contextBloatShare, which gates the finding,
+  // never counted them.
+  const withFanOut = [...human, ...Array.from({ length: 20 }, (_, i) => bloated(`a${i}`, true)).flat()];
+  const after = enrichFindings(withFanOut, computeMetrics(withFanOut), 30)
+    .find((r) => r.key === 'context-bloat');
+  assert.ok(after);
+  assert.equal(after.savingsUsdPerMonth, before.savingsUsdPerMonth);
+  assert.ok(!JSON.stringify(after.evidence).includes('agentville'));
+});

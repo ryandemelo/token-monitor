@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import type { StoredEvent } from './store.js';
-import { computeMetrics, groupBy, contextGrowthOf, parseTools, CACHE_TTL_MS } from './metrics.js';
+import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, CACHE_TTL_MS } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
 import { structuredFindings, fmtMetric } from './followthrough.js';
@@ -36,6 +36,10 @@ export interface SessionStat {
   coldRestartTokens: number;
   durationMin: number;
   dominant: Activity;
+  /** This "session" is one subagent run, not a conversation someone had. */
+  isSidechain: boolean;
+  /** Subagent type, when the transcript named one. Local display only. */
+  agentType?: string;
 }
 
 export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
@@ -53,7 +57,9 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
       if (prev === 'testing' && e.activity === 'coding') fixes++;
       prev = e.activity;
       const ts = Date.parse(e.ts);
-      if (prevTs !== undefined && ts - prevTs > CACHE_TTL_MS) {
+      // Cold restarts are a main-loop signal on both sides of the ratio (see
+      // Metrics.coldRestartShare); a subagent run never idles.
+      if (prevTs !== undefined && !e.is_sidechain && ts - prevTs > CACHE_TTL_MS) {
         coldTurns++;
         coldTokens += e.input_tokens + e.cache_creation_tokens;
       }
@@ -80,9 +86,89 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
       coldRestartTokens: coldTokens,
       durationMin: Math.max(0, Math.round((last - first) / 60_000)),
       dominant: ACTIVITIES.reduce((b, a) => (actTokens[a] > actTokens[b] ? a : b)),
+      isSidechain: evs[0].is_sidechain === 1,
+      agentType: evs.find((e) => e.agent_type)?.agent_type ?? undefined,
     });
   }
   return out;
+}
+
+/** One session's fan-out: what its subagent runs cost next to its own turns. */
+export interface FanOutStat {
+  sessionId: string;
+  project: string;
+  source: string;
+  agents: number;
+  agentSpendTokens: number;
+  agentCostUsd: number;
+  mainSpendTokens: number;
+  /** Subagent spend per main-loop token — 3.0 means the fan-out cost 3× the driver. */
+  ratio: number;
+}
+
+/**
+ * Fan-out per spawning session. Sessions with no subagent runs are omitted:
+ * the table exists to show where delegation concentrates, and a zero row says
+ * nothing. `ratio` divides by main-loop spend, so a session whose transcript
+ * has rotated away (agents on disk, driver gone) reports 0 rather than
+ * dividing by zero.
+ */
+export function computeFanOut(events: StoredEvent[]): FanOutStat[] {
+  const byRoot = new Map<string, { project: string; source: string; agents: Set<string>; agentSpend: number; agentCost: number; mainSpend: number }>();
+  for (const e of events) {
+    const root = rootSessionOf(e);
+    let s = byRoot.get(root);
+    if (!s) {
+      byRoot.set(root, (s = { project: e.project, source: e.source, agents: new Set(), agentSpend: 0, agentCost: 0, mainSpend: 0 }));
+    }
+    const spend = e.input_tokens + e.output_tokens;
+    if (e.is_sidechain) {
+      s.agents.add(e.session_id);
+      s.agentSpend += spend;
+      s.agentCost += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
+    } else {
+      s.mainSpend += spend;
+      s.project = e.project; // the driver's own project label wins
+      s.source = e.source;
+    }
+  }
+  return [...byRoot.entries()]
+    .filter(([, s]) => s.agents.size > 0)
+    .map(([sessionId, s]) => ({
+      sessionId,
+      project: s.project,
+      source: s.source,
+      agents: s.agents.size,
+      agentSpendTokens: s.agentSpend,
+      agentCostUsd: s.agentCost,
+      mainSpendTokens: s.mainSpend,
+      ratio: s.mainSpend ? s.agentSpend / s.mainSpend : 0,
+    }))
+    .sort((a, b) => b.agentSpendTokens - a.agentSpendTokens);
+}
+
+/** Spend per subagent type. Local terminal only — see UsageEvent.agentType. */
+export interface AgentTypeStat {
+  agentType: string;
+  runs: number;
+  spendTokens: number;
+  costUsd: number;
+}
+
+export function computeAgentTypes(events: StoredEvent[]): AgentTypeStat[] {
+  const map = new Map<string, { runs: Set<string>; spendTokens: number; costUsd: number }>();
+  for (const e of events) {
+    if (!e.is_sidechain) continue;
+    const key = e.agent_type || 'unlabelled';
+    let s = map.get(key);
+    if (!s) map.set(key, (s = { runs: new Set(), spendTokens: 0, costUsd: 0 }));
+    s.runs.add(e.session_id);
+    s.spendTokens += e.input_tokens + e.output_tokens;
+    s.costUsd += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
+  }
+  return [...map.entries()]
+    .map(([agentType, s]) => ({ agentType, runs: s.runs.size, spendTokens: s.spendTokens, costUsd: s.costUsd }))
+    .sort((a, b) => b.spendTokens - a.spendTokens);
 }
 
 export interface ToolStat {
@@ -128,29 +214,38 @@ export interface DeepAnalysis {
   bloatTrendSessions: SessionStat[];
   coldRestartSessions: SessionStat[];
   toolStats: ToolStat[];
+  fanOutSessions: FanOutStat[];
+  agentTypes: AgentTypeStat[];
 }
 
 export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
   const stats = computeSessionStats(events);
+  // Every list here describes a CONVERSATION. Subagent runs outnumber them
+  // ~14:1 and would otherwise fill all eight rows of the tables that are the
+  // only session-level evidence the terminal and the --llm payload get; their
+  // spend is reported in the fan-out and by-type tables instead.
+  const conversations = stats.filter((s) => !s.isSidechain);
   return {
-    expensiveSessions: [...stats].sort((a, b) => b.spendTokens - a.spendTokens).slice(0, 8),
-    fixLoopSessions: stats
+    expensiveSessions: [...conversations].sort((a, b) => b.spendTokens - a.spendTokens).slice(0, 8),
+    fixLoopSessions: conversations
       .filter((s) => s.fixIterations >= 2)
       .sort((a, b) => b.fixIterations - a.fixIterations)
       .slice(0, 8),
-    contextHeavySessions: stats
+    contextHeavySessions: conversations
       .filter((s) => s.turns >= 10)
       .sort((a, b) => b.avgContextTokens - a.avgContextTokens)
       .slice(0, 8),
-    bloatTrendSessions: stats
+    bloatTrendSessions: conversations
       .filter((s) => s.contextGrowth >= 2)
       .sort((a, b) => b.contextGrowth - a.contextGrowth)
       .slice(0, 8),
-    coldRestartSessions: stats
+    coldRestartSessions: conversations
       .filter((s) => s.coldRestartTurns > 0)
       .sort((a, b) => b.coldRestartTokens - a.coldRestartTokens)
       .slice(0, 8),
     toolStats: computeToolStats(events).slice(0, 15),
+    fanOutSessions: computeFanOut(events).slice(0, 8),
+    agentTypes: computeAgentTypes(events).slice(0, 10),
   };
 }
 
@@ -194,6 +289,9 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
       coldRestartShare: round(m.coldRestartShare),
       premiumWasteShare: round(m.premiumWasteShare),
       retryShare: round(m.retryShare),
+      subagentShare: round(m.subagentShare),
+      subagentSpendTokens: m.subagentSpendTokens,
+      subagentRuns: m.subagentSessions,
       activityShares: Object.fromEntries(
         ACTIVITIES.filter((a) => m.byActivity[a].tokens > 0).map((a) => [a, round(m.byActivity[a].share)]),
       ),
@@ -220,6 +318,16 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
     contextHeavySessions: deep.contextHeavySessions.map(slim),
     bloatTrendSessions: deep.bloatTrendSessions.map(slim),
     coldRestartSessions: deep.coldRestartSessions.map(slim),
+    // Fan-out carries no session ids and no agent-TYPE names: a custom
+    // subagent can be named after something private, so the type breakdown
+    // stays on the machine (see UsageEvent.agentType).
+    fanOutSessions: deep.fanOutSessions.slice(0, 5).map((f) => ({
+      project: f.project,
+      agents: f.agents,
+      agentSpendTokens: f.agentSpendTokens,
+      mainSpendTokens: f.mainSpendTokens,
+      ratio: round(f.ratio, 1),
+    })),
     toolErrorRates: deep.toolStats
       .filter((t) => t.errorRate > 0.05 && t.turns >= 20)
       .map((t) => ({ tool: t.tool, turns: t.turns, errorRate: round(t.errorRate, 2), retryTokens: t.retryTokens })),
@@ -237,7 +345,7 @@ export const TRACKABLE_METRICS: MetricKey[] = [
 ];
 
 const METRIC_DEFINITIONS =
-  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
 
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.
@@ -398,8 +506,14 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
   const deep = deepAnalysis(events);
   const m = computeMetrics(events);
   const out: string[] = [];
+  // A subagent run is a "session" only in the bookkeeping sense; mark it so a
+  // 40-agent fan-out doesn't read as 40 people-sized conversations.
+  const projCell = (s: SessionStat) => {
+    const p = s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project;
+    return s.isSidechain ? `↳ ${p}` : p;
+  };
   const sessRow = (s: SessionStat) => [
-    s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
+    projCell(s),
     s.source,
     String(s.turns),
     fmtTokens(s.spendTokens),
@@ -433,7 +547,7 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
       table(
         ['Project', 'Source', 'Turns', 'Ctx/turn', 'Growth', 'Span', 'Dominant'],
         deep.bloatTrendSessions.map((s) => [
-          s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
+          projCell(s),
           s.source,
           String(s.turns),
           fmtTokens(s.avgContextTokens),
@@ -450,7 +564,7 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
       table(
         ['Project', 'Source', 'Turns', 'Cold turns', 'Re-paid tokens', 'Span'],
         deep.coldRestartSessions.map((s) => [
-          s.project.length > 24 ? s.project.slice(0, 23) + '…' : s.project,
+          projCell(s),
           s.source,
           String(s.turns),
           String(s.coldRestartTurns),
@@ -458,6 +572,42 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
           s.durationMin + 'm',
         ]),
       ),
+    );
+  }
+  if (deep.fanOutSessions.length) {
+    out.push(
+      `\n${'\x1b[1m'}Subagent fan-out (spend the main transcript never mentions)${'\x1b[0m'}`,
+    );
+    out.push(
+      table(
+        ['Project', 'Source', 'Agents', 'Agent tokens', 'Agent cost', 'Main tokens', 'Agent:main'],
+        deep.fanOutSessions.map((f) => [
+          f.project.length > 24 ? f.project.slice(0, 23) + '…' : f.project,
+          f.source,
+          String(f.agents),
+          fmtTokens(f.agentSpendTokens),
+          '$' + f.agentCostUsd.toFixed(2),
+          fmtTokens(f.mainSpendTokens),
+          f.mainSpendTokens ? f.ratio.toFixed(1) + '×' : '—',
+        ]),
+      ),
+    );
+    if (deep.agentTypes.length) {
+      out.push(`\n${'\x1b[1m'}By subagent type${'\x1b[0m'}`);
+      out.push(
+        table(
+          ['Type', 'Runs', 'Tokens', 'Cost'],
+          deep.agentTypes.map((a) => [
+            a.agentType,
+            String(a.runs),
+            fmtTokens(a.spendTokens),
+            '$' + a.costUsd.toFixed(2),
+          ]),
+        ),
+      );
+    }
+    out.push(
+      `\n  ${'\x1b[2m'}${(m.subagentShare * 100).toFixed(1)}% of spend, ${m.subagentSessions} run(s). Delegation is not waste by itself — read it against what the fan-out produced. Subagent type names stay local; exports carry the share and counts only.${'\x1b[0m'}`,
     );
   }
   const failing = deep.toolStats.filter((t) => t.errorRate > 0.05 && t.turns >= 20);
