@@ -6,7 +6,8 @@ import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
 } from './store.js';
-import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
+import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay } from './report.js';
+import { runRelayScan } from './relay-scan.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
 import { mergeCategories } from './team-categories.js';
@@ -32,6 +33,7 @@ Usage:
   token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
+  token-monitor relay   [--days <n>] [--threshold <0-1>] [--source <name>] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
                         [--verify] [--keys keys.json] [--threshold <0-1>]
@@ -53,6 +55,10 @@ Commands:
             prioritized recommendations (sends aggregate metrics only); add
             --track to record those recommendations and measure (via
             follow-through) whether they actually moved their metric
+  relay     Find prompts that repeat an earlier session's output — text
+            hand-carried between sessions instead of handed over. Offline and
+            on-device: comparison runs on hashed 8-word shingles, and prompt
+            and response text is never stored, printed, or sent
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team
             report; clusters member task categories to flag the same task done
@@ -404,6 +410,15 @@ Signing fingerprint (send to your team lead for keys.json):
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(renderCategorize(result, days));
+    }
+  } else if (cmd === 'relay') {
+    const days = Number(values.days) || 30;
+    const { threshold } = parseClusterOpts(values);
+    const result = runRelayScan(db, { days, source: values.source, threshold });
+    if (values.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(renderRelay(result));
     }
   } else if (cmd === 'analyze') {
     const days = Number(values.days) || 30;

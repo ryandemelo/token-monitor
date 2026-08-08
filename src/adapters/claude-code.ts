@@ -145,10 +145,14 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
 
     const tools: string[] = [];
     const commands: string[] = [];
+    const responseParts: string[] = [];
     let hasThinking = false;
     const toolUseIds: string[] = [];
     const blocks = Array.isArray(d.message.content) ? d.message.content : [];
     for (const block of blocks) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        responseParts.push(block.text);
+      }
       if (block.type === 'tool_use' && block.name) {
         tools.push(block.name);
         if (block.id) toolUseIds.push(block.id);
@@ -183,6 +187,9 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
       // machine-authored task briefs into categorize would drown the handful
       // of sentences the person actually typed.
       intentText: opts.sidechain ? undefined : lastUserText || undefined,
+      // Sidechain output is machine-authored and never hand-pasted by a
+      // person, so it is not a relay source — same reasoning as intentText.
+      responseText: opts.sidechain ? undefined : responseParts.join('\n') || undefined,
     };
     if (opts.sidechain) {
       ev.isSidechain = true;

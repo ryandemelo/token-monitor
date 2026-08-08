@@ -198,6 +198,30 @@ Three things follow from it. A window reaching past retention gets an explanatio
 
 Coverage is counts and dates only. A quiet day is not proof of missing data, and the report says so rather than guessing.
 
+## Relay waste
+
+Every other signal here is single-session. `relay` looks at the waste *between* them: a prompt whose text substantially repeats an earlier session's output — the answer from one session hand-pasted into the next, often into a different agent.
+
+```sh
+token-monitor relay --days 30
+```
+
+```
+23.2k words of prompt text were carried over from an earlier session
+(1.8% of everything typed or pasted, $0.15 re-paid as fresh input)
+
+  From      To        Overlap  Words  Gap  Route
+  ────────  ────────  ───────  ─────  ───  ───────────
+  f0bc06ca  7fa86ed5  100%     1.2k   0d   claude-code
+  3c2923b6  254351ff  100%     1.1k   0d   claude-code
+```
+
+**The dollar figure is deliberately not the headline.** Re-paying a thousand words as fresh input costs cents; measured on the maintainer's own month it came to $0.15. What the number is good for is finding the *handoffs* — text a person moved by hand is work the toolchain could have passed along directly, and the duplicated effort around it is where the real spend goes. Write the output to a file and point the next session at it, or let a subagent carry it.
+
+Detection is offline and deterministic, like `categorize`. Comparison runs on hashed 8-word shingles: each session's output becomes a Bloom filter, and a later prompt is scored by how much of it that filter recognises. Prompt and response text is read in memory, redacted first, hashed, and dropped — it is never stored, printed, or sent, and exports carry shares and counts only. Fingerprints persist so a paste can still be traced after the source transcript has been deleted, which at a 30-day retention is well inside the window a handoff spans.
+
+`--threshold` tunes how much overlap counts (default 0.35). The signal is strongly bimodal in practice — real pastes score near 100%, unrelated prompts near 5% — so the exact value rarely matters, and the detector is biased toward missing a relay rather than inventing one.
+
 ## Trends
 
 `report --trend` compares the window against the previous same-length one — spend, cost, cache hit, rework, and the optimization signals, each with a direction arrow (green = improving, red = regressing), plus the top project movers by spend change. The HTML dashboard includes the trend automatically when two windows of data exist.
