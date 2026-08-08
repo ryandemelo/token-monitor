@@ -224,7 +224,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.bloatedSessions += m.bloatedSessions ?? 0;
     out.coldRestartTurns += m.coldRestartTurns ?? 0;
     out.coldRestartTokens += m.coldRestartTokens ?? 0;
-    // Pre-0.12 exports have no main-loop denominator because they had no
+    // Pre-0.13 exports have no main-loop denominator because they had no
     // subagent data at all — their own fresh-paid input IS the right base.
     out.coldRestartBaseTokens += m.coldRestartBaseTokens ?? (m.inputTokens + m.cacheCreationTokens);
     out.premiumWasteTokens += m.premiumWasteTokens ?? 0;
@@ -255,7 +255,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     : 0;
   out.premiumWasteShare = out.spendTokens ? out.premiumWasteTokens / out.spendTokens : 0;
   out.retryShare = out.spendTokens ? out.retryTokens / out.spendTokens : 0;
-  // Pre-0.12 exports carry no subagent fields at all, so a team share is a
+  // Pre-0.13 exports carry no subagent fields at all, so a team share is a
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;
   out.extendedCacheShare = out.cacheCreationTokens
@@ -308,7 +308,7 @@ export function dominantActivity(m: Metrics): Activity {
  * Members whose newest data predates their export by more than a few days.
  * Reported as an observation, not an accusation: a quiet week and a dead
  * collect job look identical from here, and only the member can tell them
- * apart. Exports without coverage (pre-0.12) are simply absent from the list.
+ * apart. Exports without coverage (pre-0.13) are simply absent from the list.
  */
 export function staleMembers(
   exports: SignedExport[],

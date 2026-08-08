@@ -19,7 +19,7 @@ export const EXTENDED_CACHE_TTL_MS = 60 * 60_000;
  * user can check by hand, instead of a per-turn rule nobody can reproduce.
  *
  * Rows without the split (every non-Claude-Code source, and everything
- * collected before 0.12) report 0 here and land on the 5-minute default — the
+ * collected before 0.13) report 0 here and land on the 5-minute default — the
  * exact assumption they were already measured under, so no history moves.
  */
 export function effectiveCacheTtlOf(rows: StoredEvent[]): number {
