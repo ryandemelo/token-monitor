@@ -5,7 +5,7 @@ import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
-import { fmtTokens } from './report.js';
+import { fmtTokens, fmtSubagents } from './report.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
@@ -72,6 +72,9 @@ export function renderHtml(
     ['Spend tokens', fmtTokens(m.spendTokens)],
     ['Cache hit', pct(m.cacheHitRatio)],
     ['Rework', pct(m.reworkRatio)],
+    // Only when there IS fan-out — see fmtSubagents on why a standing 0% card
+    // would be noise on the five sources that never write sidechain turns.
+    ...(m.subagentSessions ? [['Subagent spend', pct(m.subagentShare)]] : []),
     ['Est. cost', cost(m)],
   ]
     .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
@@ -143,7 +146,7 @@ export function renderHtml(
 ${stackedBar(m)}
 <div class="legend">${legend}</div>
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
-<p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}</p>
+<p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}${esc(fmtSubagents(m))}</p>
 ${opts.categorize ? `<p class="dup">🔁 ${esc(fmtCategorizeSummary(opts.categorize))} <span class="muted">— run <code>categorize</code> for detail</span></p>` : ''}
 
 <h2>Projects</h2>

@@ -10,6 +10,16 @@ export const BLOAT_MIN_TURNS = 8;
 export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
 export const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
 
+/**
+ * The conversation a turn belongs to from the user's point of view: a subagent
+ * run counts under the session that spawned it, everything else under itself.
+ * `sessions` counts these, so a fan-out of 40 agents stays ONE session in the
+ * report while each run keeps its own chronology for per-session math.
+ */
+export function rootSessionOf(e: StoredEvent): string {
+  return e.parent_session_id || e.session_id;
+}
+
 export interface Metrics {
   events: number;
   sessions: number;
@@ -48,6 +58,16 @@ export interface Metrics {
   /** Tokens on turns re-running a tool that errored in the immediately previous turn. */
   retryTokens: number;
   retryShare: number;
+  /** Subagent (sidechain) runs seen in the window, and what they spent. */
+  subagentSessions: number;
+  subagentSpendTokens: number;
+  /**
+   * Subagent spend as a share of all spend. Descriptive, NOT a waste signal:
+   * fan-out is often exactly the right way to do the work. It is here because
+   * every other number moves when it is counted — and until this release it
+   * was not counted at all.
+   */
+  subagentShare: number;
 }
 
 export function computeMetrics(events: StoredEvent[]): Metrics {
@@ -60,12 +80,18 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   let input = 0, output = 0, cacheRead = 0, cacheCreate = 0, thinking = 0;
   let costUsd = 0, costEstimated = false, unpriced = 0, errorEvents = 0;
   let premiumWasteTokens = 0;
+  let subagentSpendTokens = 0;
+  const subagentSessions = new Set<string>();
 
   // Rework: group by session, walk chronologically, count spend after first failed event.
   const bySession = new Map<string, StoredEvent[]>();
 
   for (const e of events) {
-    sessions.add(e.session_id);
+    sessions.add(rootSessionOf(e));
+    if (e.is_sidechain) {
+      subagentSessions.add(e.session_id);
+      subagentSpendTokens += e.input_tokens + e.output_tokens;
+    }
     input += e.input_tokens;
     output += e.output_tokens;
     cacheRead += e.cache_read_tokens;
@@ -126,8 +152,14 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
       }
     }
 
-    // Context bloat trend: late-half avg context vs early half.
-    const growth = contextGrowthOf(arr);
+    // Context bloat trend: late-half avg context vs early half. Subagent runs
+    // are deliberately NOT trend sessions. They are long enough to qualify and
+    // there are far more of them than there are conversations, so counting
+    // them would bury the signal in a denominator of runs nobody can act on:
+    // the remedy for bloat is to compact or restart, and a subagent is spawned
+    // fresh, does one job, and exits. (Their spend still counts everywhere
+    // else — this is about which sessions the ratio describes.)
+    const growth = arr[0].is_sidechain ? undefined : contextGrowthOf(arr);
     if (growth !== undefined) {
       trendSessions++;
       if (growth.ratio >= BLOAT_GROWTH && growth.lateFreshShare >= BLOAT_FRESH_SHARE) bloatedSessions++;
@@ -174,6 +206,9 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     premiumWasteShare: spendTokens ? premiumWasteTokens / spendTokens : 0,
     retryTokens,
     retryShare: spendTokens ? retryTokens / spendTokens : 0,
+    subagentSessions: subagentSessions.size,
+    subagentSpendTokens,
+    subagentShare: spendTokens ? subagentSpendTokens / spendTokens : 0,
   };
 }
 
@@ -204,6 +239,23 @@ export function contextGrowthOf(
   if (!earlyCtx || !lateCtxTotal) return undefined;
   const lateFresh = late.reduce((s, e) => s + e.input_tokens + e.cache_creation_tokens, 0);
   return { ratio: lateCtxTotal / half / earlyCtx, lateFreshShare: lateFresh / lateCtxTotal };
+}
+
+/**
+ * Group turns under the conversation a person actually had: a session plus
+ * every subagent run it spawned. Used where the unit of analysis is the TASK
+ * (what did this piece of work cost, what was it about) rather than the
+ * chronology of one transcript.
+ */
+export function groupByRootSession(events: StoredEvent[]): Map<string, StoredEvent[]> {
+  const map = new Map<string, StoredEvent[]>();
+  for (const e of events) {
+    const k = rootSessionOf(e);
+    let arr = map.get(k);
+    if (!arr) map.set(k, (arr = []));
+    arr.push(e);
+  }
+  return map;
 }
 
 export function groupBy<K extends keyof StoredEvent>(events: StoredEvent[], key: K): Map<string, StoredEvent[]> {

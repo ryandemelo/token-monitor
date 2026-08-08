@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeSessionStats, computeToolStats, deepAnalysis, buildLlmPayload, buildLlmPrompt, buildLlmTrackPrompt, parseLlmFindings, extractJson } from '../src/analyze.js';
+import { computeSessionStats, computeToolStats, computeFanOut, computeAgentTypes, deepAnalysis, buildLlmPayload, buildLlmPrompt, buildLlmTrackPrompt, parseLlmFindings, extractJson } from '../src/analyze.js';
 import { makeStored } from './helpers.js';
 
 const fixLoopSession = [
@@ -150,4 +150,61 @@ test('parseLlmFindings: bare array, drops untrackable / duplicate / titleless it
 
 test('parseLlmFindings: no JSON present yields an empty, non-throwing result', () => {
   assert.deepEqual(parseLlmFindings('I could not analyze this.'), { interventions: [], dropped: 0 });
+});
+
+// ---- subagent fan-out (#63) -------------------------------------------------
+
+const fanOutEvents = [
+  makeStored({ session_id: 'p1', project: 'repo-a', ts: '2026-06-01T10:00:00Z', input_tokens: 400, output_tokens: 100 }),
+  makeStored({ session_id: 'g1', parent_session_id: 'p1', is_sidechain: 1, agent_type: 'Explore', project: 'repo-a', ts: '2026-06-01T10:05:00Z', input_tokens: 600, output_tokens: 400 }),
+  makeStored({ session_id: 'g2', parent_session_id: 'p1', is_sidechain: 1, agent_type: 'general-purpose', project: 'repo-a', ts: '2026-06-01T10:06:00Z', input_tokens: 400, output_tokens: 100 }),
+  makeStored({ session_id: 'p2', project: 'repo-b', ts: '2026-06-01T11:00:00Z', input_tokens: 100, output_tokens: 100 }),
+];
+
+test('computeFanOut attributes agent spend to the session that delegated it', () => {
+  const rows = computeFanOut(fanOutEvents);
+  assert.equal(rows.length, 1); // p2 delegated nothing, so it has no row
+  const [f] = rows;
+  assert.equal(f.sessionId, 'p1');
+  assert.equal(f.project, 'repo-a');
+  assert.equal(f.agents, 2);
+  assert.equal(f.agentSpendTokens, 1500);
+  assert.equal(f.mainSpendTokens, 500);
+  assert.equal(f.ratio, 3); // the fan-out cost 3x the driver
+});
+
+test('computeFanOut survives a session whose driver transcript is gone', () => {
+  const [f] = computeFanOut([
+    makeStored({ session_id: 'g9', parent_session_id: 'lost', is_sidechain: 1, input_tokens: 100, output_tokens: 100 }),
+  ]);
+  assert.equal(f.mainSpendTokens, 0);
+  assert.equal(f.ratio, 0); // reported as 0, never Infinity
+});
+
+test('computeAgentTypes ranks spend by subagent type', () => {
+  const types = computeAgentTypes(fanOutEvents);
+  assert.deepEqual(types.map((t) => t.agentType), ['Explore', 'general-purpose']);
+  assert.equal(types[0].spendTokens, 1000);
+  assert.equal(types[0].runs, 1);
+  // Unlabelled runs are counted, not dropped: the spend is real either way.
+  const unlabelled = computeAgentTypes([
+    makeStored({ session_id: 'g0', parent_session_id: 'p', is_sidechain: 1 }),
+  ]);
+  assert.deepEqual(unlabelled.map((t) => t.agentType), ['unlabelled']);
+});
+
+test('the LLM payload carries the subagent share but never agent-type names', () => {
+  const payload = buildLlmPayload(fanOutEvents, 30) as {
+    overall: { subagentShare: number; subagentRuns: number };
+    fanOutSessions: Array<{ project: string; agents: number }>;
+  };
+  assert.equal(payload.overall.subagentRuns, 2);
+  assert.equal(payload.overall.subagentShare, 0.682);
+  assert.deepEqual(payload.fanOutSessions, [
+    { project: 'repo-a', agents: 2, agentSpendTokens: 1500, mainSpendTokens: 500, ratio: 3 },
+  ]);
+  const json = JSON.stringify(payload);
+  assert.ok(!json.includes('Explore'));
+  assert.ok(!json.includes('general-purpose'));
+  assert.ok(!json.includes('p1')); // no session ids either
 });

@@ -141,3 +141,59 @@ test('anthropic models are priced exactly, unknown models counted as unpriced', 
   assert.equal(unknown.costUsd, 0);
   assert.equal(unknown.costUnpricedTokens, 200);
 });
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('subagent turns count as spend but not as extra sessions', () => {
+  const m = computeMetrics([
+    makeStored({ session_id: 's1', input_tokens: 400, output_tokens: 100 }),
+    makeStored({ session_id: 'a1', parent_session_id: 's1', is_sidechain: 1, input_tokens: 60, output_tokens: 40 }),
+    makeStored({ session_id: 'a2', parent_session_id: 's1', is_sidechain: 1, input_tokens: 60, output_tokens: 40 }),
+    makeStored({ session_id: 'a2', parent_session_id: 's1', is_sidechain: 1, input_tokens: 30, output_tokens: 70 }),
+  ]);
+  assert.equal(m.sessions, 1); // one conversation, not four
+  assert.equal(m.subagentSessions, 2); // ...that fanned out into two runs
+  assert.equal(m.spendTokens, 800);
+  assert.equal(m.subagentSpendTokens, 300);
+  assert.equal(m.subagentShare, 0.375);
+});
+
+test('a window with no fan-out reports a zero subagent share, not NaN', () => {
+  const m = computeMetrics([makeStored({ session_id: 's1' })]);
+  assert.equal(m.subagentSessions, 0);
+  assert.equal(m.subagentShare, 0);
+  assert.equal(computeMetrics([]).subagentShare, 0);
+});
+
+test('per-session hygiene math stays per-transcript: a fan-out is not one long session', () => {
+  // Two agent runs interleaved in time under one parent. Folded into the
+  // parent they would look like cold restarts; kept apart they are not.
+  const m = computeMetrics([
+    makeStored({ session_id: 'a1', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:00:00Z' }),
+    makeStored({ session_id: 'a2', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:20:00Z' }),
+    makeStored({ session_id: 'a1', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:40:00Z' }),
+    makeStored({ session_id: 'a2', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T11:00:00Z' }),
+  ]);
+  assert.equal(m.sessions, 1);
+  assert.equal(m.coldRestartTurns, 2); // one per run, not three across a merged timeline
+});
+
+test('subagent runs are excluded from the context-bloat denominator', () => {
+  const growing = (session: string, sidechain: boolean) =>
+    Array.from({ length: 8 }, (_, i) =>
+      makeStored({
+        session_id: session,
+        is_sidechain: sidechain ? 1 : 0,
+        parent_session_id: sidechain ? 'p' : null,
+        ts: `2026-06-01T10:0${i}:00Z`,
+        input_tokens: 1000 * (i + 1),
+        cache_read_tokens: 0,
+      }),
+    );
+  const m = computeMetrics([...growing('human', false), ...growing('a1', true), ...growing('a2', true)]);
+  // One conversation is measurable for bloat; the two agent runs are not
+  // sessions anyone can compact, so they never dilute the ratio.
+  assert.equal(m.trendSessions, 1);
+  assert.equal(m.bloatedSessions, 1);
+  assert.equal(m.contextBloatShare, 1);
+});

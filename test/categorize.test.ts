@@ -63,3 +63,41 @@ test('fmtCategorizeSummary: singular/plural wording and the estimated marker', (
     '3 recurring tasks spanning ≥2 projects (~$48.50)',
   );
 });
+
+// ---- subagent accounting (#63) ----------------------------------------------
+
+test('a task is priced with the fan-out it delegated, and agent runs are not tasks', () => {
+  const db = freshDb();
+  const agentSpend = { inputTokens: 3000, outputTokens: 1000 };
+  insertEvents(db, [
+    makeEvent({ source: 'claude-code', eventKey: 'k1', sessionId: 's1', project: 'proj-a', activity: 'coding' }),
+    makeEvent({ source: 'claude-code', eventKey: 'g1', sessionId: 'a1', parentSessionId: 's1', isSidechain: true, project: 'proj-a', activity: 'coding', ...agentSpend }),
+    makeEvent({ source: 'claude-code', eventKey: 'k2', sessionId: 's2', project: 'proj-b', activity: 'coding' }),
+  ]);
+  const fp = ['jwt', 'auth', 'login', 'rest', 'api'];
+  recordIntents(db, [
+    { sessionId: 's1', source: 'claude-code', project: 'proj-a', intentId: 'i1', label: 'jwt auth login', fingerprint: fp, hasText: true, firstSeen: '2026-06-01T10:00:00.000Z' },
+    { sessionId: 's2', source: 'claude-code', project: 'proj-b', intentId: 'i2', label: 'jwt auth login', fingerprint: fp, hasText: true, firstSeen: '2026-06-01T10:00:00.000Z' },
+  ]);
+
+  const s = categorizeSummary(db, DAYS);
+  assert.ok(s);
+  // Still two sessions doing one duplicated task — the agent run is part of
+  // s1's work, never a third participant.
+  assert.equal(s!.duplicateSessions, 2);
+
+  // ...and the delegated spend is priced into the task, so the duplicate-work
+  // headline can't under-report by exactly the fan-out share.
+  const withoutFanOut = freshDb();
+  insertEvents(withoutFanOut, [
+    makeEvent({ source: 'claude-code', eventKey: 'k1', sessionId: 's1', project: 'proj-a', activity: 'coding' }),
+    makeEvent({ source: 'claude-code', eventKey: 'k2', sessionId: 's2', project: 'proj-b', activity: 'coding' }),
+  ]);
+  recordIntents(withoutFanOut, [
+    { sessionId: 's1', source: 'claude-code', project: 'proj-a', intentId: 'i1', label: 'jwt auth login', fingerprint: fp, hasText: true, firstSeen: '2026-06-01T10:00:00.000Z' },
+    { sessionId: 's2', source: 'claude-code', project: 'proj-b', intentId: 'i2', label: 'jwt auth login', fingerprint: fp, hasText: true, firstSeen: '2026-06-01T10:00:00.000Z' },
+  ]);
+  assert.ok(s!.duplicateCost > categorizeSummary(withoutFanOut, DAYS)!.duplicateCost);
+  db.close();
+  withoutFanOut.close();
+});

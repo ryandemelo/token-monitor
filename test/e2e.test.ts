@@ -650,3 +650,63 @@ test('e2e: an alias for a live project reaches steady state (no relabel flip-flo
   assert.ok(third.stdout.includes('"myapp"'), 'aliased project must appear in the export');
   assert.ok(!JSON.parse(third.stdout).byProject['myapp-wt1'], 'raw worktree label must be gone');
 });
+
+test('e2e: subagent transcripts are collected, priced, and reported as fan-out', () => {
+  // One session that delegates to two agents — the shape `collect` was blind
+  // to before #63: the driver's transcript never mentions their spend.
+  const home = mkdtempSync(join(tmpdir(), 'tm-e2e-subagents-'));
+  const projDir = join(home, '.claude', 'projects', '-Users-dev-fanout-app');
+  const cwd = '/Users/dev/fanout-app';
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(join(projDir, 'sess-1.jsonl'), [
+    JSON.stringify({ type: 'user', sessionId: 'sess-1', timestamp: '2026-06-01T10:00:00.000Z', message: { content: [{ type: 'text', text: 'Audit the payment module for retry bugs' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'main-1', sessionId: 'sess-1', isSidechain: false, cwd, timestamp: '2026-06-01T10:00:05.000Z',
+      message: { model: 'claude-opus-4-7', usage: { input_tokens: 1000, output_tokens: 200 }, content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] } }),
+  ].join('\n') + '\n');
+
+  const agentFile = (dir: string, agentId: string, uuid: string, agentType: string, worktree: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `agent-${agentId}.jsonl`), JSON.stringify({
+      type: 'assistant', uuid, sessionId: 'sess-1', agentId, isSidechain: true, attributionAgent: agentType,
+      cwd: worktree, timestamp: '2026-06-01T10:01:00.000Z',
+      message: { model: 'claude-opus-4-7', usage: { input_tokens: 4000, output_tokens: 800 }, content: [{ type: 'tool_use', id: uuid + 't', name: 'Grep', input: {} }] },
+    }) + '\n');
+  };
+  const subagents = join(projDir, 'sess-1', 'subagents');
+  agentFile(subagents, 'a1a1a1', 'agent-u1', 'Explore', cwd);
+  // Nested workflow run, in an isolated worktree whose basename must NOT
+  // become a project of its own.
+  agentFile(join(subagents, 'workflows', 'wf_1'), 'b2b2b2', 'agent-u2', 'general-purpose', '/tmp/wt/fanout-app-2');
+
+  const collected = run(['collect', '--source', 'claude-code'], { home });
+  assert.equal(collected.code, 0, collected.stderr);
+  assert.match(collected.stdout, /claude-code\s+3 files\s+3 turns\s+3 new/);
+
+  const json = JSON.parse(run(['report', '--json', '--no-categories', ...DAYS], { home }).stdout);
+  assert.equal(json.overall.sessions, 1, 'a fan-out is one conversation, not three');
+  assert.equal(json.overall.subagentSessions, 2);
+  assert.equal(json.overall.spendTokens, 10800);
+  assert.equal(json.overall.subagentSpendTokens, 9600);
+  assert.ok(Math.abs(json.overall.subagentShare - 9600 / 10800) < 1e-9);
+  assert.deepEqual(Object.keys(json.byProject), ['fanout-app'], 'the worktree must not mint a project');
+  // Agent-type names never cross the wire. ("Explore" is matched as a JSON
+  // value — the Explorer persona legitimately contains it as a substring.)
+  const wire = JSON.stringify(json);
+  assert.ok(!wire.includes('"Explore"'), 'agent type leaked into the export');
+  assert.ok(!wire.includes('general-purpose'), 'agent type leaked into the export');
+
+  const report = run(['report', ...DAYS], { home });
+  assert.match(report.stdout, /subagents 89% of spend \(2 runs\)/);
+
+  const analyze = run(['analyze', ...DAYS], { home });
+  assert.ok(analyze.stdout.includes('Subagent fan-out'), 'missing fan-out table');
+  assert.ok(analyze.stdout.includes('By subagent type'), 'missing subagent type table');
+  assert.match(analyze.stdout, /Explore/);
+  assert.match(analyze.stdout, /8\.0×/, 'agent:main ratio missing');
+
+  const htmlPath = join(home, 'r.html');
+  assert.equal(run(['html', '--out', htmlPath, ...DAYS], { home }).code, 0);
+  const html = readFileSync(htmlPath, 'utf8');
+  assert.ok(html.includes('Subagent spend'), 'missing subagent card');
+  assert.ok(html.includes('subagents 89% of spend'), 'missing subagent signal line');
+});

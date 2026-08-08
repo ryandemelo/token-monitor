@@ -53,6 +53,7 @@ The repo ships [`AGENTS.md`](AGENTS.md) and [`llms.txt`](llms.txt) so agents can
 | **Rework ratio** | Share of tokens spent on code/test turns *after* the first failed turn in a session. High rework usually means skipped planning. Distinct from `analyze`'s **fix iterations**, which counts testing→coding transitions — sessions that barely test can have high rework but zero visible fix loops. User-declined permission prompts are *not* counted as failures. |
 | **Think:code ratio** | Planning+exploration tokens per coding token. Too low correlates with high rework. |
 | **Model mix** | Premium-model tokens on turns a cheaper tier would handle. |
+| **Subagent share** | Spend from Task/Agent fan-out rather than the main loop. Descriptive, not a verdict — but every other number is wrong without it, and a fan-out of 40 agents still counts as the one session someone actually had. |
 | **Estimated cost** | API-equivalent USD from a built-in price table (`src/pricing.ts`). Non-Anthropic prices are placeholders marked `~` — edit to match your contract. |
 
 ## Personas
@@ -74,7 +75,7 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 
 | Agent | Source | Status |
 |---|---|---|
-| **Claude Code** | `~/.claude/projects/**/*.jsonl` | ✅ Verified — per-turn tokens, cache split, model, tools, git branch |
+| **Claude Code** | `~/.claude/projects/**/*.jsonl`, incl. `<session>/subagents/**/agent-*.jsonl` | ✅ Verified — per-turn tokens, cache split, model, tools, git branch, **subagent runs** |
 | **Gemini CLI** | `~/.gemini/tmp/*/chats/*.json` | ✅ Verified — per-turn tokens incl. thoughts, tool calls |
 | **Codex CLI** | `~/.codex/sessions/**/rollout-*.jsonl` | ⚠️ Experimental — diffs cumulative `token_count` events; verify against Codex's own usage screens |
 | **Cursor** | `Cursor/User/globalStorage/state.vscdb` (SQLite) | ✅ Verified — per-turn tokens on completed turns, tool calls, agent/chat sessions. Cursor doesn't persist cache tokens or the resolved backend model (Auto mode reports as `cursor-auto`) |
@@ -82,6 +83,8 @@ Personas are computed per-project and overall, so one expensive workflow can't h
 | **Copilot Chat** (VS Code) | `Code/User/workspaceStorage/*/chatSessions/*` | ⚠️ Experimental — Copilot doesn't record token usage locally, so counts are **estimated** from text length (~4 chars/token) and models are suffixed `(est)`. Turn counts, timestamps, tools, and errors are real |
 
 Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads only composer/bubble keys — never the auth entries that live in the same database.
+
+**Subagent coverage.** Claude Code writes each Task/Agent run to its own transcript under the session directory, and the main transcript never mentions what those runs spent. token-monitor reads them: on the maintainer's own 30-day window that is 24% of spend across 2,027 runs — invisible to every version before 0.12, and to any tool that reads only the top level. The format is vendor-internal and undocumented, so parsing is fail-soft (a reshaped or unreadable agent file costs its own turns, never the collect). Only Claude Code is known to persist this; the other five sources report no sidechain data, so their subagent share reads as absent rather than zero.
 
 ## IDE extension
 
@@ -161,8 +164,11 @@ Identity is the **signing fingerprint**, not the OS username: two different "rya
 - **Context bloat trend** — sessions whose late-half context grew ≥2× without cache reads keeping pace (start fresh / compact earlier)
 - **Cold restarts** — turns resuming after the ~5-min cache TTL that re-paid their context as fresh input (batch prompts, split idle work)
 - **Tool error rates** — tools that keep failing, plus the token cost of their retry loops
+- **Subagent fan-out** — which sessions delegated, what their agent runs cost next to the driver's own turns, and the spend per subagent type (Claude Code only)
 
-The report and dashboard surface the same signals in one line (context bloat, cold restarts, premium tokens on exploration/conversation, retry-loop spend), and each one becomes a tracked recommendation when it crosses its threshold.
+The report and dashboard surface the same signals in one line (context bloat, cold restarts, premium tokens on exploration/conversation, retry-loop spend, subagent share), and each one becomes a tracked recommendation when it crosses its threshold.
+
+Fan-out is reported, not judged: delegating heavily can be exactly the right call, so there is no "too many subagents" finding. Read the ratio against what the fan-out produced. Subagent **type** names stay on your machine — a custom agent can be named after something private — so exports and `--llm` payloads carry the share and the counts only.
 
 Add `--llm` and the aggregates go to a coding agent you already have installed (`claude`, `gemini`, or `codex` — auto-detected, override with `--agent`), which returns prioritized interventions with the evidence, the workflow change, and the metric to watch:
 
