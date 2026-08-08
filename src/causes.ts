@@ -1,5 +1,5 @@
 import type { StoredEvent } from './store.js';
-import { groupBy, contextGrowthOf, CACHE_TTL_MS, BLOAT_GROWTH, BLOAT_FRESH_SHARE } from './metrics.js';
+import { groupBy, contextGrowthOf, effectiveCacheTtlOf, BLOAT_GROWTH, BLOAT_FRESH_SHARE } from './metrics.js';
 
 /**
  * Cause decomposition (#41): a finding names a symptom ("cache hit low") but
@@ -57,6 +57,12 @@ function decomposeCacheHit(sessions: StoredEvent[][]): Cause[] {
     // restart or context churn. Without this the same report can print "cold
     // restarts 0%" and "dominant cause: cold restarts (83%)".
     const sidechain = arr.some((e) => e.is_sidechain === 1);
+    // Mirror metrics.ts on the TTL too: a 1h-cache session's 20-minute gap is
+    // a cache hit, so its fresh input is steady-state, not a cold restart.
+    // Classified over the same main-loop rows metrics.ts uses, so a mixed
+    // group (legacy inlined sidechain turns) can't land on a different TTL
+    // here than it does in the headline number.
+    const ttl = effectiveCacheTtlOf(arr.filter((e) => !e.is_sidechain));
     const short = !sidechain && arr.length < SHORT_SESSION_TURNS;
     const growth = sidechain ? undefined : contextGrowthOf(arr);
     // Mirror metrics.ts exactly: late-half growth only counts as churn when it
@@ -68,7 +74,7 @@ function decomposeCacheHit(sessions: StoredEvent[][]): Cause[] {
     for (let i = 0; i < arr.length; i++) {
       const f = freshOf(arr[i]);
       if (f === 0) continue;
-      if (!sidechain && i > 0 && Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
+      if (!sidechain && i > 0 && Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > ttl) {
         b.cold += f;
       } else if (short) {
         b.short += f;

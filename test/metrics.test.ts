@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeMetrics, contextGrowthOf } from '../src/metrics.js';
+import { computeMetrics, contextGrowthOf, extendedCacheOpportunity } from '../src/metrics.js';
 import { makeStored } from './helpers.js';
 import type { StoredEvent } from '../src/store.js';
 
@@ -227,4 +227,102 @@ test('subagent runs are excluded from the context-bloat denominator', () => {
   assert.equal(m.trendSessions, 1);
   assert.equal(m.bloatedSessions, 1);
   assert.equal(m.contextBloatShare, 1);
+});
+
+// ---- cache-TTL-aware cold restarts (#64) -------------------------------------
+
+/** A session of `n` turns spaced `gapMin` apart, writing cache at the given tier. */
+const ttlSession = (id: string, gapMin: number, tier: '5m' | '1h', n = 4) =>
+  Array.from({ length: n }, (_, i) =>
+    makeStored({
+      session_id: id,
+      ts: new Date(Date.parse('2026-06-01T10:00:00Z') + i * gapMin * 60_000).toISOString(),
+      input_tokens: 1000,
+      cache_creation_tokens: 4000,
+      cache_creation_1h_tokens: tier === '1h' ? 4000 : 0,
+      output_tokens: 0,
+    }),
+  );
+
+test('a 1h-cache session is not charged cold restarts for sub-hour gaps', () => {
+  const warm = computeMetrics(ttlSession('s1', 20, '1h'));
+  assert.equal(warm.coldRestartTurns, 0, '20-min gaps are cache hits on the 1h tier');
+  assert.equal(warm.coldRestartShare, 0);
+  assert.equal(warm.extendedCacheSessions, 1);
+  assert.equal(warm.extendedCacheShare, 1);
+
+  // Identical session, 5-minute writes: every gap is a real re-pay.
+  const cold = computeMetrics(ttlSession('s1', 20, '5m'));
+  assert.equal(cold.coldRestartTurns, 3);
+  assert.equal(cold.extendedCacheSessions, 0);
+  assert.equal(cold.extendedCacheShare, 0);
+});
+
+test('gaps past the extended TTL still count on a 1h-cache session', () => {
+  // 90 minutes is past even the extended window — genuinely re-paid.
+  const m = computeMetrics(ttlSession('s1', 90, '1h'));
+  assert.equal(m.coldRestartTurns, 3);
+});
+
+test('the 1h/5m decision is per session and turns on half the write tokens', () => {
+  const mixed = (id: string, oneHour: number) =>
+    Array.from({ length: 3 }, (_, i) =>
+      makeStored({
+        session_id: id,
+        ts: new Date(Date.parse('2026-06-01T10:00:00Z') + i * 20 * 60_000).toISOString(),
+        input_tokens: 1000,
+        cache_creation_tokens: 1000,
+        cache_creation_1h_tokens: oneHour,
+        output_tokens: 0,
+      }),
+    );
+  assert.equal(computeMetrics(mixed('a', 500)).coldRestartTurns, 0, 'exactly half counts as extended');
+  assert.equal(computeMetrics(mixed('b', 499)).coldRestartTurns, 2, 'just under half stays on 5 min');
+
+  // One 1h session next to one 5m session: each is judged on its own writes.
+  const both = computeMetrics([...ttlSession('warm', 20, '1h'), ...ttlSession('cold', 20, '5m')]);
+  assert.equal(both.coldRestartTurns, 3);
+  assert.equal(both.extendedCacheSessions, 1);
+});
+
+test('rows with no TTL split keep the 5-minute assumption exactly', () => {
+  // Pre-0.12 rows and every non-Claude-Code source report 0 here; their
+  // numbers must not move at all.
+  const legacy = ttlSession('s1', 20, '5m').map((e) => ({ ...e, cache_creation_1h_tokens: 0 }));
+  assert.equal(computeMetrics(legacy).coldRestartTurns, 3);
+  assert.equal(computeMetrics(legacy).extendedCacheShare, 0);
+});
+
+test('extendedCacheOpportunity counts only gaps the 1h cache would have covered', () => {
+  const s = [
+    ...ttlSession('recoverable', 20, '5m', 3), // 2 gaps inside the 1h window
+    ...ttlSession('too-long', 90, '5m', 3), // past the extended TTL — not recoverable
+    ...ttlSession('already-extended', 20, '1h', 3), // has the feature already
+  ];
+  const opp = extendedCacheOpportunity(s);
+  assert.equal(opp.sessions, 1, 'only the in-window session benefits');
+  assert.equal(opp.recoverableTokens, 2 * 5000); // 2 gaps x (1000 input + 4000 write)
+  // Both 5-minute sessions pay the premium once the tier is switched on; the
+  // one already on the extended tier does not.
+  assert.equal(opp.writeTokens, 2 * (3 * 4000));
+});
+
+test('the extended-cache premium is charged to every 5m session, not just the ones it helps', () => {
+  // Enabling the 1-hour cache is a setting, not a per-session choice: a 5m
+  // session with no recoverable gap still starts paying the higher write
+  // premium, so quoting a net saving without it is a number the user can't get.
+  const withGap = ttlSession('a', 20, '5m', 3);
+  const gapFree = Array.from({ length: 10 }, (_, i) =>
+    makeStored({ session_id: 'b', ts: new Date(Date.parse('2026-06-01T10:00:00Z') + i * 60_000).toISOString(),
+      input_tokens: 1000, cache_creation_tokens: 4000, output_tokens: 0 }),
+  );
+  const alone = extendedCacheOpportunity(withGap);
+  const both = extendedCacheOpportunity([...withGap, ...gapFree]);
+  assert.equal(both.recoverableTokens, alone.recoverableTokens, 'gap-free session recovers nothing');
+  assert.equal(both.sessions, alone.sessions, '...and is not counted as a beneficiary');
+  assert.equal(both.writeTokens, alone.writeTokens + 10 * 4000, 'but its writes DO pay the premium');
+
+  // A session already on the extended tier is unaffected either way.
+  const withExtended = extendedCacheOpportunity([...withGap, ...ttlSession('c', 20, '1h', 5)]);
+  assert.equal(withExtended.writeTokens, alone.writeTokens);
 });

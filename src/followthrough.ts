@@ -104,7 +104,7 @@ export function structuredFindings(m: Metrics): Finding[] {
       key: 'cold-restarts',
       metric: 'coldRestartShare',
       direction: 'down',
-      message: `${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after the ~5-min cache TTL. Batch prompts within the cache window, or split long-idle work into new sessions.`,
+      message: `${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after their session's cache TTL${m.extendedCacheSessions ? ' (1 h where the session wrote to the extended cache, ~5 min otherwise)' : ' (~5 min)'}. Batch prompts within the cache window, or split long-idle work into new sessions.`,
     });
   }
   if (m.premiumWasteShare >= 0.3 && m.spendTokens > 100_000) {

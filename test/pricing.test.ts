@@ -66,3 +66,17 @@ test('generation-specific rows win over older ones', () => {
   assert.equal(costOf('claude-sonnet-4-5', 1_000_000, 0, 0, 0).usd, 3);
   assert.equal(costOf('claude-sonnet-5', 1_000_000, 0, 0, 0).usd, 3);
 });
+
+test('extended-cache write premium is priced where a vendor publishes one', () => {
+  // Anthropic: 5-minute writes 1.25x input, 1-hour writes 2x input.
+  for (const [model, input] of [['claude-opus-5', 5], ['claude-sonnet-5', 3], ['claude-haiku-4-5', 1]] as const) {
+    const row = PRICES.find((p) => p.match.test(model))!;
+    assert.ok(Math.abs(row.cacheWrite - input * 1.25) < 1e-9, `${model} 5m write`);
+    assert.ok(Math.abs((row.cacheWrite1h ?? 0) - input * 2) < 1e-9, `${model} 1h write`);
+  }
+  // Vendors that don't bill cache writes get no extended price rather than a
+  // guessed one — the recommendation stays silent instead of inventing a premium.
+  const gemini = PRICES.find((p) => p.match.test('gemini-3-flash'))!;
+  assert.equal(gemini.cacheWrite, 0);
+  assert.equal(gemini.cacheWrite1h, undefined);
+});

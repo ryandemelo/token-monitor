@@ -119,6 +119,7 @@ export function makeStored(partial: Partial<StoredEvent> = {}): StoredEvent {
     is_error: 0,
     activity: 'coding',
     is_sidechain: 0,
+    cache_creation_1h_tokens: 0,
     parent_session_id: null,
     agent_type: null,
     ...partial,

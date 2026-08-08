@@ -228,3 +228,34 @@ test('the session index exists on new and pre-existing dbs', () => {
     assert.match(plan.map((r) => r.detail).join(' '), /idx_events_session/);
   }
 });
+
+test('the cache-TTL split survives the round trip and migrates onto old dbs', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'tm-ttl-')), 'old.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE events (
+    id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_key TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, ts TEXT NOT NULL,
+    model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+    thinking_tokens INTEGER NOT NULL, tools TEXT NOT NULL, has_thinking INTEGER NOT NULL,
+    is_error INTEGER NOT NULL, git_branch TEXT, activity TEXT NOT NULL,
+    UNIQUE(source, event_key));
+    INSERT INTO events (source, event_key, session_id, project, ts, model, input_tokens,
+      output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, tools,
+      has_thinking, is_error, activity)
+    VALUES ('claude-code','pre','s0','p','2026-06-01T00:00:00.000Z','m',1,1,0,900,0,'[]',0,0,'coding')`);
+  legacy.close();
+
+  const db = openDb(path);
+  // Pre-existing rows default to 0 — i.e. all-5-minute, which is what they were.
+  assert.equal(loadEvents(db)[0].cache_creation_1h_tokens, 0);
+  openDb(path); // idempotent: the ALTER is not re-run
+
+  insertEvents(db, [
+    makeEvent({ eventKey: 'n1', cacheCreationTokens: 1000, cacheCreation1hTokens: 800 }),
+    makeEvent({ eventKey: 'n2', cacheCreationTokens: 1000 }), // adapter didn't report a split
+  ]);
+  const rows = loadEvents(db);
+  assert.equal(rows.find((r) => r.cache_creation_tokens === 1000 && r.cache_creation_1h_tokens === 800)?.cache_creation_1h_tokens, 800);
+  assert.equal(rows.filter((r) => r.cache_creation_1h_tokens === 0).length, 2);
+});
