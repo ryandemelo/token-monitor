@@ -481,3 +481,77 @@ export function loadRelayFingerprints(db: DatabaseSync, days?: number): RelayFin
     firstTs: r.first_ts, lastTs: r.last_ts,
   }));
 }
+
+/**
+ * Detected relays, persisted so `report` and `html` can surface the signal
+ * without paying for a full re-scan. Same contract as the frozen intents
+ * categorize writes: the expensive derivation happens in its own command, and
+ * the cheap read-only summary rides along elsewhere.
+ *
+ * Results, unlike fingerprints, depend on the whole corpus — a later scan
+ * with more history can find an origin an earlier one could not — so a rerun
+ * replaces a pair rather than being ignored. Session ids and counts only; no
+ * text, no hashes.
+ */
+export function ensureRelayFindingsTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS relay_findings (
+      to_session_id TEXT NOT NULL,
+      from_session_id TEXT NOT NULL,
+      to_source TEXT NOT NULL,
+      from_source TEXT NOT NULL,
+      to_project TEXT NOT NULL,
+      overlap REAL NOT NULL,
+      relayed_words INTEGER NOT NULL,
+      to_ts TEXT NOT NULL,
+      PRIMARY KEY (to_session_id, from_session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_relay_findings_ts ON relay_findings(to_ts);
+  `);
+}
+
+export interface RelayFindingRow {
+  to_session_id: string;
+  from_session_id: string;
+  to_source: string;
+  from_source: string;
+  to_project: string;
+  overlap: number;
+  relayed_words: number;
+  to_ts: string;
+}
+
+/** Replace the findings for the scanned window; returns rows written. */
+export function recordRelayFindings(db: DatabaseSync, rows: RelayFindingRow[]): number {
+  ensureRelayFindingsTable(db);
+  const stmt = db.prepare(`
+    INSERT INTO relay_findings
+      (to_session_id, from_session_id, to_source, from_source, to_project, overlap, relayed_words, to_ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(to_session_id, from_session_id) DO UPDATE SET
+      overlap = excluded.overlap, relayed_words = excluded.relayed_words,
+      to_source = excluded.to_source, from_source = excluded.from_source,
+      to_project = excluded.to_project, to_ts = excluded.to_ts
+  `);
+  let n = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      n += Number(stmt.run(r.to_session_id, r.from_session_id, r.to_source, r.from_source,
+        r.to_project, r.overlap, r.relayed_words, r.to_ts).changes);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return n;
+}
+
+export function loadRelayFindings(db: DatabaseSync, days?: number): RelayFindingRow[] {
+  ensureRelayFindingsTable(db);
+  const where = days ? 'WHERE to_ts >= ?' : '';
+  const params = days ? [new Date(Date.now() - days * 86_400_000).toISOString()] : [];
+  return db.prepare(`SELECT * FROM relay_findings ${where} ORDER BY relayed_words DESC`)
+    .all(...params) as unknown as RelayFindingRow[];
+}

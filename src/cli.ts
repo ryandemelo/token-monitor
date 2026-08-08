@@ -7,7 +7,7 @@ import {
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
 } from './store.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay } from './report.js';
-import { runRelayScan } from './relay-scan.js';
+import { runRelayScan, relaySummary } from './relay-scan.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
 import { mergeCategories } from './team-categories.js';
@@ -385,7 +385,7 @@ Signing fingerprint (send to your team lead for keys.json):
       const cat = events.length > 0
         ? categorizeSummary(db, { days, project: values.project, source: values.source })
         : undefined;
-      let out = renderReport(events, { days, follow, categorize: cat });
+      let out = renderReport(events, { days, follow, categorize: cat, relay: relaySummary(db, { days }) });
       if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
       console.log(out);
     }
@@ -487,7 +487,7 @@ Signing fingerprint (send to your team lead for keys.json):
     const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);
     const follow = events.length > 0 ? syncFindings(db, computeMetrics(events)) : undefined;
     const cat = events.length > 0 ? categorizeSummary(db, { days }) : undefined;
-    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous, categorize: cat }));
+    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous, categorize: cat, relay: relaySummary(db, { days }) }));
     console.log(`Wrote ${values.out} (${events.length} turns, last ${days} days). Open it in a browser.`);
   } else {
     console.error(`Unknown command "${cmd}"\n`);

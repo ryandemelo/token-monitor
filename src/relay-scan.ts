@@ -12,7 +12,7 @@
  * text — the return type carries session ids, counts and dollars only.
  */
 import type { DatabaseSync } from 'node:sqlite';
-import { loadEvents, recordRelayFingerprints, loadRelayFingerprints } from './store.js';
+import { loadEvents, recordRelayFingerprints, loadRelayFingerprints, recordRelayFindings, loadRelayFindings } from './store.js';
 import type { StoredEvent } from './store.js';
 import { groupByRootSession } from './metrics.js';
 import { costOf } from './pricing.js';
@@ -156,6 +156,14 @@ export function runRelayScan(
 
   const events = loadEvents(db, { days, source: opts.source });
   const { usd, estimated } = priceRelays(pairs, events);
+  // Persist so report/html can surface the signal without re-scanning, the
+  // same way categorize freezes intents for its cross-surfaced callout.
+  recordRelayFindings(db, pairs.map((p) => ({
+    to_session_id: p.toSessionId, from_session_id: p.fromSessionId,
+    to_source: p.toSource, from_source: p.fromSource, to_project: p.toProject,
+    overlap: p.overlap, relayed_words: p.relayedWords,
+    to_ts: new Date(Date.now()).toISOString(),
+  })));
   const relayedWords = pairs.reduce((t, p) => t + p.relayedWords, 0);
   return {
     days,
@@ -165,5 +173,28 @@ export function runRelayScan(
     relayedShare: promptWords > 0 ? relayedWords / promptWords : 0,
     relayedCostUsd: usd,
     estimated,
+  };
+}
+
+/** Cross-surface summary for `report`/`html` (see categorizeSummary). */
+export interface RelaySummary {
+  pairs: number;
+  relayedWords: number;
+  sessions: number;
+}
+
+/**
+ * Read-only relay signal for the shared surfaces, derived from findings a
+ * previous `relay` run already stored. No re-collection, no new privacy
+ * surface. Undefined until the user has run `relay`, or when it found
+ * nothing, so the callout only appears when there is something to say.
+ */
+export function relaySummary(db: DatabaseSync, opts: { days?: number } = {}): RelaySummary | undefined {
+  const rows = loadRelayFindings(db, opts.days ?? 30);
+  if (rows.length === 0) return undefined;
+  return {
+    pairs: rows.length,
+    relayedWords: rows.reduce((t, r) => t + r.relayed_words, 0),
+    sessions: new Set(rows.map((r) => r.to_session_id)).size,
   };
 }
