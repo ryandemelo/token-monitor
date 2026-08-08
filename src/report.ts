@@ -4,13 +4,15 @@ import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
-import { mergeMetrics, rollupExports, dominantActivity, displayName } from './team.js';
+import { mergeMetrics, rollupExports, dominantActivity, displayName, staleMembers } from './team.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import type { EnrichedRec } from './recommendations.js';
 import { enrichFindings, fmtSavings, fmtEvidence, fmtCause, potentialBill, fmtPotential, blendedRates, realizedMonthly, fmtUsdShort } from './recommendations.js';
 import type { TrendRow, TrendVerdict } from './trends.js';
 import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js';
+import type { SourceCoverage } from './coverage.js';
+import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote, trendIsComparable } from './coverage.js';
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
@@ -125,8 +127,13 @@ export function renderReport(
     String(m.byActivity[a].events),
   ]);
   out.push(table(['Activity', '', 'Share', 'Tokens', 'Turns'], actRows));
+  const coverage = computeCoverage(events, opts.days);
+  out.push(`\n  ${DIM}coverage: ${fmtCoverage(coverage)}${RESET}`);
+  const note = retentionNote(coverage, opts.days, readRetentionDays());
+  if (note) out.push(`  ${YELLOW}⚠${RESET} ${DIM}${note}${RESET}`);
+
   out.push(
-    `\n  ${DIM}rework ratio ${(m.reworkRatio * 100).toFixed(1)}%  ·  think:code ${m.thinkToCodeRatio.toFixed(2)}  ·  ${m.errorEvents} turns hit tool errors${RESET}`,
+    `  ${DIM}rework ratio ${(m.reworkRatio * 100).toFixed(1)}%  ·  think:code ${m.thinkToCodeRatio.toFixed(2)}  ·  ${m.errorEvents} turns hit tool errors${RESET}`,
   );
   out.push(
     `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${fmtSubagents(m)}${fmtCacheTtl(m)}${RESET}`,
@@ -223,12 +230,26 @@ export function renderTrend(
     return out.join('\n');
   }
   const rows = trendRows(computeMetrics(current), computeMetrics(previous));
+  // An arrow drawn across a previous window with far less data measures the
+  // collection gap, not the behaviour. Report the shortfall instead of a
+  // verdict — a false "improving" costs more than a missing arrow.
+  const cmp = trendIsComparable(current, previous);
   out.push(
     table(
       ['Metric', 'Previous', 'Now', 'Change'],
-      rows.map((r) => [r.label, fmtTrendValue(r, r.prev), fmtTrendValue(r, r.now), trendDelta(r)]),
+      rows.map((r) => [
+        r.label,
+        fmtTrendValue(r, r.prev),
+        fmtTrendValue(r, r.now),
+        cmp.comparable ? trendDelta(r) : `${DIM}insufficient data${RESET}`,
+      ]),
     ),
   );
+  if (!cmp.comparable) {
+    out.push(
+      `\n  ${YELLOW}⚠${RESET} ${DIM}the previous window has ${cmp.previousDays} day(s) of data against ${cmp.currentDays} now — too little to call a direction, so no arrows are drawn.${RESET}`,
+    );
+  }
   const movers = projectMovers(current, previous);
   if (movers.length) {
     out.push(`\n  ${BOLD}Top project movers (spend)${RESET}`);
@@ -436,6 +457,17 @@ export function renderTeamReport(
       if (m.byActivity[a].tokens === 0) continue;
       out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);
     }
+  }
+
+  const stale = staleMembers(exports, opts.keyring);
+  if (stale.length) {
+    out.push(section('Stale data'));
+    for (const s of stale) {
+      out.push(`  ${YELLOW}⚠${RESET} ${s.name} — newest ${s.source} data is ${s.staleDays}d old`);
+    }
+    out.push(
+      `  ${DIM}A quiet week and a broken collect look the same from here; ask before reading these members' numbers as low usage.${RESET}`,
+    );
   }
 
   if (opts.categories) out.push(...renderTeamCategoryLines(opts.categories, exports.length));

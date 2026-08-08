@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
+  relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects, resolveAliasChains,
   recordIntents, loadIntents,
 } from '../src/store.js';
 
@@ -258,4 +258,36 @@ test('the cache-TTL split survives the round trip and migrates onto old dbs', ()
   const rows = loadEvents(db);
   assert.equal(rows.find((r) => r.cache_creation_tokens === 1000 && r.cache_creation_1h_tokens === 800)?.cache_creation_1h_tokens, 800);
   assert.equal(rows.filter((r) => r.cache_creation_1h_tokens === 0).length, 2);
+});
+
+test('alias chains resolve to a fixed point so collects reach steady state (#74)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tm-chain-'));
+  const write = (map: unknown) => {
+    const f = join(dir, `${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, JSON.stringify(map));
+    return loadProjectAliases(f);
+  };
+
+  // a -> b -> c collapses to a single terminal target...
+  assert.deepEqual(write({ a: 'b', b: 'c' }), { a: 'c', b: 'c' });
+  // ...and the answer no longer depends on JSON key order.
+  assert.deepEqual(write({ b: 'c', a: 'b' }), { b: 'c', a: 'c' });
+  // A cycle has no terminal target: each key collapses to itself, which
+  // applyProjectAliases skips — no loop, no arbitrary winner.
+  assert.deepEqual(write({ a: 'b', b: 'a' }), { a: 'a', b: 'b' });
+  // A self-map is a no-op, and unrelated entries are untouched.
+  assert.deepEqual(write({ x: 'x', p: 'q' }), { x: 'x', p: 'q' });
+
+  // The end-to-end property: with the chain resolved, the second collect is silent.
+  const aliases = write({ a: 'b', b: 'c' });
+  const db = openDb(':memory:');
+  insertEvents(db, [makeEvent({ eventKey: 'e1', sessionId: 's1', project: 'a' })]);
+  const collect = () => {
+    const sessions = new Map([[`claude-code\x1fs1`, aliases['a'] ?? 'a']]);
+    return relabelEvents(db, sessions) + applyProjectAliases(db, aliases);
+  };
+  assert.ok(collect() > 0, 'first collect does the relabel');
+  assert.equal(collect(), 0, 'second collect must be silent');
+  assert.equal(collect(), 0);
+  assert.equal(loadEvents(db)[0].project, 'c');
 });

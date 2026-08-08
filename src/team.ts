@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { userInfo, hostname } from 'node:os';
 import type { Metrics } from './metrics.js';
+import type { SourceCoverage } from './coverage.js';
+import { computeCoverage, STALE_WARN_DAYS } from './coverage.js';
 import { computeMetrics, groupBy } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
@@ -54,6 +56,14 @@ export interface ExportV1 {
   byProject: Record<string, Metrics>;
   categories?: ExportCategory[];
   categorizeDays?: number;
+  /**
+   * Per-source day counts and dates — additive on version 1, same as
+   * `categories`. This closes a real failure mode: `schedule`/`push` keeps
+   * delivering signed exports even when a member's adapter has collected
+   * nothing new for weeks, and until now the lead had no way to tell that
+   * apart from a genuinely quiet member.
+   */
+  coverage?: SourceCoverage[];
 }
 
 export function buildExport(events: StoredEvent[], days: number): ExportV1 {
@@ -64,6 +74,7 @@ export function buildExport(events: StoredEvent[], days: number): ExportV1 {
     generatedAt: new Date().toISOString(),
     days,
     overall: computeMetrics(events),
+    coverage: computeCoverage(events, days),
     byProject: Object.fromEntries(
       [...groupBy(events, 'project')].map(([p, evs]) => [p, computeMetrics(evs)]),
     ),
@@ -291,4 +302,25 @@ export function dominantActivity(m: Metrics): Activity {
   return ACTIVITIES.reduce((best, a) =>
     m.byActivity[a].tokens > m.byActivity[best].tokens ? a : best,
   );
+}
+
+/**
+ * Members whose newest data predates their export by more than a few days.
+ * Reported as an observation, not an accusation: a quiet week and a dead
+ * collect job look identical from here, and only the member can tell them
+ * apart. Exports without coverage (pre-0.12) are simply absent from the list.
+ */
+export function staleMembers(
+  exports: SignedExport[],
+  keyring?: Record<string, string>,
+): Array<{ name: string; source: string; staleDays: number }> {
+  const out: Array<{ name: string; source: string; staleDays: number }> = [];
+  for (const ex of exports) {
+    for (const c of ex.coverage ?? []) {
+      if (c.staleDays >= STALE_WARN_DAYS) {
+        out.push({ name: displayName(ex, keyring), source: c.source, staleDays: c.staleDays });
+      }
+    }
+  }
+  return out.sort((a, b) => b.staleDays - a.staleDays || (a.name < b.name ? -1 : 1));
 }
