@@ -66,6 +66,13 @@ export interface UsageEvent {
    */
   agentType?: string;
   /**
+   * The assistant's response text for this turn. Same contract as intentText
+   * below: carried in memory ONLY, never persisted — insertEvents has no
+   * column for it. Relay detection (#65) hashes it into a Bloom filter and
+   * discards the text; nothing derived from it is ever printed or exported.
+   */
+  responseText?: string;
+  /**
    * The user's prompt text for this turn, carried in-memory ONLY for `categorize`
    * to derive an on-device intent fingerprint. Never persisted: insertEvents has
    * no column for it. Redaction happens in intent.ts before anything is stored.

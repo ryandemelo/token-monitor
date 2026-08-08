@@ -16,6 +16,7 @@ import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote, trendIs
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
+import type { RelayResult } from './relay-scan.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -329,6 +330,56 @@ export function renderCategorize(r: CategorizeResult, days: number): string {
 }
 
 /** Finding lines with savings + worst-session evidence — shared with `analyze`. */
+/**
+ * The relay report. Leads with the honest denominator: re-paid input is
+ * cheap, so the headline is how much text was carried by hand, with the
+ * dollar figure kept beside it rather than in front of it. The remedy is the
+ * point — a file, a subagent, or a skill instead of a clipboard.
+ */
+export function renderRelay(r: RelayResult): string {
+  const out: string[] = [];
+  out.push(section(`Relay waste — last ${r.days} days`));
+  if (r.pairs.length === 0) {
+    out.push(
+      `  ${DIM}No prompts in this window substantially repeat an earlier session's output.${RESET}`,
+    );
+    out.push(
+      `  ${DIM}${r.fingerprinted} session(s) fingerprinted. Detection needs both sides: a source session whose output was collected, and a later prompt that repeats it.${RESET}\n`,
+    );
+    return out.join('\n');
+  }
+
+  const cost = (r.estimated ? '~' : '') + '$' + r.relayedCostUsd.toFixed(2);
+  out.push(
+    `  ${BOLD}${fmtTokens(r.relayedWords)} words of prompt text were carried over from an earlier session${RESET} ` +
+      `${DIM}(${(r.relayedShare * 100).toFixed(1)}% of everything typed or pasted, ${cost} re-paid as fresh input)${RESET}`,
+  );
+  out.push(
+    `  ${DIM}The re-paid input itself is cheap. The cost that matters is the work it re-triggers — and text a person moves by hand is work the toolchain could have handed over directly.${RESET}\n`,
+  );
+
+  out.push(
+    table(
+      ['From', 'To', 'Overlap', 'Words', 'Gap', 'Route'],
+      r.pairs.slice(0, 12).map((p) => [
+        p.fromSessionId.slice(0, 8),
+        p.toSessionId.slice(0, 8),
+        (p.overlap * 100).toFixed(0) + '%',
+        fmtTokens(p.relayedWords),
+        p.gapDays + 'd',
+        p.fromSource === p.toSource ? p.fromSource : `${p.fromSource} → ${p.toSource}`,
+      ]),
+    ),
+  );
+  out.push(
+    `\n  ${YELLOW}→${RESET} Write the output to a file and point the next session at it, or let a subagent carry it — either way the text stops being re-typed.`,
+  );
+  out.push(
+    `  ${DIM}Overlap is measured on hashed 8-word shingles; prompt and response text is never stored, printed, or sent.${RESET}\n`,
+  );
+  return out.join('\n');
+}
+
 export function renderEnrichedRecs(recs: EnrichedRec[]): string[] {
   const out: string[] = [];
   for (const r of recs) {

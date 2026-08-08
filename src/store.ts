@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { UsageEvent, Source } from './types.js';
+import type { RelayFingerprint } from './relay.js';
 
 export const DEFAULT_DB = join(homedir(), '.token-monitor', 'token-monitor.sqlite');
 
@@ -401,4 +402,82 @@ export function loadEvents(
       ${col('cache_creation_1h_tokens', '0')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
+}
+
+/**
+ * Per-session relay fingerprints (#65) — a Bloom filter over the hashed
+ * 8-word shingles of that session's assistant output, plus the counts and
+ * timestamps detection needs. There is deliberately no text column, and
+ * unlike category terms these hashes are not enumerable: an 8-word shingle
+ * comes from open prose, not a handful of common dev words.
+ *
+ * Stored so relay can still be found after the source transcript is gone —
+ * Claude Code deletes them after `cleanupPeriodDays`, which is exactly the
+ * window a hand-carried paste spans.
+ */
+export function ensureRelayTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_relay (
+      session_id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      project TEXT NOT NULL,
+      out_bloom BLOB NOT NULL,
+      out_shingles INTEGER NOT NULL,
+      first_ts TEXT NOT NULL,
+      last_ts TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Record fingerprints, refreshing a session whose transcript has grown.
+ *
+ * Unlike session_intents this is NOT first-wins: an intent is a frozen
+ * judgement about what a session was for, while a fingerprint is a mechanical
+ * summary of the text, and a session that gained turns since the last collect
+ * has more output to match against. Re-deriving is idempotent — same text in,
+ * same bits out.
+ */
+export function recordRelayFingerprints(db: DatabaseSync, rows: RelayFingerprint[]): number {
+  ensureRelayTable(db);
+  const stmt = db.prepare(`
+    INSERT INTO session_relay (session_id, source, project, out_bloom, out_shingles, first_ts, last_ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      out_bloom = excluded.out_bloom, out_shingles = excluded.out_shingles,
+      project = excluded.project, last_ts = excluded.last_ts
+      WHERE excluded.out_shingles >= session_relay.out_shingles
+  `);
+  let written = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      written += Number(
+        stmt.run(r.sessionId, r.source, r.project, r.outBloom, r.outShingles, r.firstTs, r.lastTs).changes,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return written;
+}
+
+/** Fingerprints whose session ended within the window, newest last. */
+export function loadRelayFingerprints(db: DatabaseSync, days?: number): RelayFingerprint[] {
+  ensureRelayTable(db);
+  const where = days ? `WHERE last_ts >= ?` : '';
+  const params = days ? [new Date(Date.now() - days * 86_400_000).toISOString()] : [];
+  const rows = db
+    .prepare(`SELECT * FROM session_relay ${where} ORDER BY last_ts`)
+    .all(...params) as unknown as Array<{
+      session_id: string; source: string; project: string;
+      out_bloom: Uint8Array; out_shingles: number; first_ts: string; last_ts: string;
+    }>;
+  return rows.map((r) => ({
+    sessionId: r.session_id, source: r.source, project: r.project,
+    outBloom: r.out_bloom, outShingles: r.out_shingles,
+    firstTs: r.first_ts, lastTs: r.last_ts,
+  }));
 }
