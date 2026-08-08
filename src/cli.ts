@@ -2,9 +2,14 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { ADAPTERS } from './adapters/index.js';
-import { openDb, insertEvents, loadEvents, DEFAULT_DB } from './store.js';
+import {
+  openDb, insertEvents, loadEvents, DEFAULT_DB,
+  relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
+} from './store.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize } from './report.js';
-import { runCategorize, categorizeSummary } from './categorize.js';
+import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
+import type { ExportCategory } from './team.js';
+import { mergeCategories } from './team-categories.js';
 import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
@@ -24,14 +29,15 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
-  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--db <path>]
+  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
-                        [--verify] [--keys keys.json] [--json] [--html team.html]
+                        [--verify] [--keys keys.json] [--threshold <0-1>]
+                        [--min-cluster <n>] [--json] [--html team.html]
   token-monitor init    --from <url-or-path>
-  token-monitor push    [--db <path>]
+  token-monitor push    [--no-categories] [--db <path>]
   token-monitor schedule [--hours <n>] [--remove]
   token-monitor reconcile [--provider anthropic|openai] [--days <n>] [--db <path>]
   token-monitor fingerprint [--db <path>]
@@ -48,10 +54,16 @@ Commands:
             --track to record those recommendations and measure (via
             follow-through) whether they actually moved their metric
   html      Self-contained HTML dashboard (no server, no external assets)
-  merge     Combine member exports (report --json > me.json) into a team report
+  merge     Combine member exports (report --json > me.json) into a team
+            report; clusters member task categories to flag the same task done
+            independently by ≥2 people and rank org-skill candidates (labels
+            only — no prompts ever cross the wire)
   init      Join a team: fetch the lead's config, set up keys, first collect,
             and (if configured) install the collection schedule
-  push      Sign and deliver an export to the team destination from config
+  push      Sign and deliver an export to the team destination from config.
+            Exports carry aggregate task categories (redacted keyword labels,
+            counts, $ — building them records session intents first-wins);
+            omit with --no-categories
   schedule  Install/remove a recurring collect+push job (launchd/cron)
   reconcile Cross-check local totals against the provider's usage API (org
             lead only — needs ANTHROPIC_ADMIN_KEY or OPENAI_ADMIN_KEY in the
@@ -74,7 +86,17 @@ Options:
               (\`platform:\` header, indented members), or JSON
   --by        merge rollup axis: team or discipline (default: discipline)
   --html      write an HTML dashboard to this path (merge: team rollup; categorize: task categories)
+  --no-categories  omit task categories from report --json / push exports
   --db        SQLite path (default: ${DEFAULT_DB})
+
+Project families:
+  collect assigns each session ONE project — the directory where most of its
+  work happened, with monorepo subdirs folding into the shallowest parent the
+  session visited — so cd-ing around no longer fragments a repo into
+  "backend"/"frontend" rows. Historical rows are relabeled on collect;
+  originals stay in the project_raw column. Worktree dirs that should fold
+  into their repo are mapped manually via
+  ~/.token-monitor/project-aliases.json ({"myapp-wt1": "myapp"}).
 `;
 
 function buildSignedExportJson(
@@ -82,13 +104,32 @@ function buildSignedExportJson(
   days: number,
   dbPath?: string,
   filters: { project?: string; source?: string } = {},
+  opts: { noCategories?: boolean } = {},
 ): string {
   const events = loadEvents(db, { days, ...filters });
   const ex = buildExport(events, days);
   const persona = assignPersona(ex.overall);
+  // Task categories ride along (labels only — see exportCategories) so a
+  // lead's merge can cluster tasks across people without members remembering
+  // to run categorize. runCategorize's first-wins intent recording is a
+  // deliberate, idempotent side effect: scheduled pushes self-refresh
+  // coverage. Any adapter-scan failure just omits the fields — an export or
+  // push must never break on one malformed local log.
+  let categoryFields: { categories?: ExportCategory[]; categorizeDays?: number } = {};
+  if (!opts.noCategories) {
+    try {
+      categoryFields = {
+        categories: exportCategories(runCategorize(db, { days, ...filters })),
+        categorizeDays: days,
+      };
+    } catch {
+      /* additive fields — omit on failure */
+    }
+  }
   const signed = signObject(
     {
       ...ex,
+      ...categoryFields,
       persona,
       recommendations: [...persona.recommendations, ...generalRecommendations(ex.overall)],
       // Evidence is aggregate-only by construction: session ids, dates, token
@@ -100,17 +141,57 @@ function buildSignedExportJson(
   return JSON.stringify(signed, null, 2);
 }
 
+/** Shared --threshold / --min-cluster validation (categorize and merge cluster with the same knobs). */
+function parseClusterOpts(values: { threshold?: string; 'min-cluster'?: string }): {
+  threshold?: number;
+  minCluster?: number;
+} {
+  const threshold = values.threshold !== undefined ? Number(values.threshold) : undefined;
+  if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
+    console.error(`--threshold must be a number between 0 and 1, got "${values.threshold}"`);
+    process.exit(1);
+  }
+  const minCluster = values['min-cluster'] !== undefined ? Number(values['min-cluster']) : undefined;
+  if (minCluster !== undefined && (!Number.isInteger(minCluster) || minCluster < 2)) {
+    console.error(`--min-cluster must be an integer ≥ 2, got "${values['min-cluster']}"`);
+    process.exit(1);
+  }
+  return { threshold, minCluster };
+}
+
 function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
+  let totalRelabeled = 0;
+  // Aliases compose into the relabel TARGET, not just a separate pass: if an
+  // aliased project's logs still exist, relabeling to the adapter's name and
+  // then aliasing it away would flip the same rows back and forth on every
+  // collect — steady state must stay at 0 changes.
+  const aliases = loadProjectAliases();
   for (const source of sources) {
     const { events, result } = ADAPTERS[source]();
     result.eventsInserted = insertEvents(db, events);
-    const note = result.note ? `  (${result.note})` : '';
+    // Collect IS the backfill: converge historical rows of every session this
+    // scan still sees onto the family-normalized (and aliased) project.
+    const sessions = new Map<string, string>();
+    for (const e of events) sessions.set(`${e.source}\x1f${e.sessionId}`, aliases[e.project] ?? e.project);
+    result.eventsRelabeled = relabelEvents(db, sessions);
+    totalRelabeled += result.eventsRelabeled;
+    const notes = [
+      result.note,
+      result.eventsRelabeled > 0
+        ? `${result.eventsRelabeled} relabeled into project families; originals in project_raw`
+        : undefined,
+    ].filter(Boolean).join('; ');
     console.log(
       `${source.padEnd(12)} ${String(result.filesScanned).padStart(5)} files  ` +
         `${String(result.eventsFound).padStart(7)} turns  ` +
-        `${String(result.eventsInserted).padStart(7)} new${note}`,
+        `${String(result.eventsInserted).padStart(7)} new${notes ? `  (${notes})` : ''}`,
     );
   }
+  // The direct pass catches rows whose logs rotated away (sessions the scan
+  // above never saw); reversible via project_raw like any relabel.
+  const aliased = applyProjectAliases(db, aliases);
+  if (aliased > 0) console.log(`aliases      ${String(aliased).padStart(31)} rows relabeled via project-aliases.json`);
+  if (totalRelabeled + aliased > 0) syncIntentProjects(db);
 }
 
 async function main() {
@@ -121,6 +202,7 @@ async function main() {
       days: { type: 'string', default: '30' },
       project: { type: 'string' },
       json: { type: 'boolean', default: false },
+      'no-categories': { type: 'boolean', default: false },
       trend: { type: 'boolean', default: false },
       team: { type: 'string' },
       out: { type: 'string', default: 'report.html' },
@@ -186,6 +268,11 @@ async function main() {
       console.error(`⊘ skipped stale export from ${displayName(d, keyring)} (${identityOf(d)}, generated ${d.generatedAt}) — newer one present`);
     }
     const team = values.team ? parseTeamConfig(values.team) : {};
+    // Cluster member task categories across people (labels only — see
+    // team-categories.ts). Runs after dedupe so a stale double-push can't
+    // read as two people.
+    const { threshold, minCluster } = parseClusterOpts(values);
+    const categories = mergeCategories(exports, { threshold, minCluster, keyring });
     if (values.json) {
       const overall = mergeMetrics(exports.map((e) => e.overall));
       console.log(JSON.stringify({
@@ -194,12 +281,16 @@ async function main() {
         rollups: rollupExports(exports, team, by, keyring),
         overall,
         persona: assignPersona(overall),
+        categories: categories.categories,
+        crossUserDuplicates: categories.crossUserDuplicates,
+        orgSkillCandidates: categories.orgSkillCandidates,
+        categoryCoverage: { withCategories: categories.withCategories, total: exports.length },
       }, null, 2));
     } else {
-      console.log(renderTeamReport(exports, team, { by, keyring }));
+      console.log(renderTeamReport(exports, team, { by, keyring, categories }));
     }
     if (values.html) {
-      writeFileSync(values.html, renderTeamHtml(exports, team, { by, keyring }));
+      writeFileSync(values.html, renderTeamHtml(exports, team, { by, keyring, categories }));
       console.error(`Wrote ${values.html} (${exports.length} export(s)).`);
     }
     return;
@@ -247,7 +338,10 @@ Signing fingerprint (send to your team lead for keys.json):
   } else if (cmd === 'push') {
     const config = loadConfig(keyDirFor(values.db) ?? DEFAULT_KEY_DIR);
     const days = Number(values.days) || config.windowDays || 30;
-    const where = await pushExport(buildSignedExportJson(db, days, values.db), config);
+    const where = await pushExport(
+      buildSignedExportJson(db, days, values.db, {}, { noCategories: values['no-categories'] }),
+      config,
+    );
     console.log(`Export (last ${days} days, signed) — ${where}`);
   } else if (cmd === 'schedule') {
     if (values.remove) {
@@ -267,7 +361,7 @@ Signing fingerprint (send to your team lead for keys.json):
     const days = Number(values.days) || 30;
     const filters = { project: values.project, source: values.source };
     if (values.json) {
-      console.log(buildSignedExportJson(db, days, values.db, filters));
+      console.log(buildSignedExportJson(db, days, values.db, filters, { noCategories: values['no-categories'] }));
     } else {
       // With --trend, load both windows in one query and partition, so the
       // current slice and the comparison share the same boundary.
@@ -295,16 +389,7 @@ Signing fingerprint (send to your team lead for keys.json):
       console.error(`--days must be a positive integer, got "${values.days}"`);
       process.exit(1);
     }
-    const threshold = values.threshold !== undefined ? Number(values.threshold) : undefined;
-    if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
-      console.error(`--threshold must be a number between 0 and 1, got "${values.threshold}"`);
-      process.exit(1);
-    }
-    const minCluster = values['min-cluster'] !== undefined ? Number(values['min-cluster']) : undefined;
-    if (minCluster !== undefined && (!Number.isInteger(minCluster) || minCluster < 2)) {
-      console.error(`--min-cluster must be an integer ≥ 2, got "${values['min-cluster']}"`);
-      process.exit(1);
-    }
+    const { threshold, minCluster } = parseClusterOpts(values);
     const result = runCategorize(db, {
       days,
       project: values.project,

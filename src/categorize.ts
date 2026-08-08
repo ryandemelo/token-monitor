@@ -25,10 +25,13 @@ import type { Source } from './types.js';
 import { deriveSessionIntent, fnv1a } from './intent.js';
 import { clusterLabels } from './cluster.js';
 import type { ClusterItem } from './cluster.js';
+import type { ExportCategory } from './team.js';
 
 export interface CategoryRow {
   id: string;
   name: string;
+  /** Cluster top terms (≤8, redacted) — feeds the team-export match key. */
+  terms: string[];
   sessions: number;
   projects: string[];
   tokens: number;
@@ -193,7 +196,10 @@ function buildResult(
     // evidence of the same task, so it must never trigger a "duplicate work"
     // accusation or an org-skill recommendation.
     const duplicate = hasText && members.length >= minCluster && projects.length >= 2;
-    return { id: c.id, name: c.name, sessions: members.length, projects, tokens, cost, estimated, hasText, duplicate };
+    return {
+      id: c.id, name: c.name, terms: c.terms.slice(0, 8),
+      sessions: members.length, projects, tokens, cost, estimated, hasText, duplicate,
+    };
   });
 
   return {
@@ -204,6 +210,27 @@ function buildResult(
     duplicates: categories.filter((c) => c.duplicate).sort((a, b) => b.cost - a.cost || byCostThenSessions(a, b)),
     skillCandidates: categories.filter((c) => c.hasText && c.sessions >= minCluster).sort(byCostThenSessions),
   };
+}
+
+/**
+ * Project a categorize run onto the aggregate-only wire shape for team
+ * exports. Two gates keep the surface tight: hasText-only (a no-text
+ * activity-fallback cluster is not an intent and must never leave the machine
+ * dressed as one — same reasoning as the `duplicate` gate above), and a
+ * top-40-by-cost cap, SORTED BEFORE SLICING so two builds over the same DB
+ * emit byte-identical arrays (exports are Ed25519-signed — a wobbling cap
+ * would produce different signatures for the same data).
+ */
+export function exportCategories(r: CategorizeResult): ExportCategory[] {
+  return [...r.categories]
+    .filter((c) => c.hasText)
+    .sort((a, b) => b.cost - a.cost || byCostThenSessions(a, b))
+    .slice(0, 40)
+    .map((c) => ({
+      id: c.id, name: c.name, terms: c.terms, sessions: c.sessions,
+      projects: c.projects, tokens: c.tokens, cost: c.cost,
+      estimated: c.estimated, duplicate: c.duplicate,
+    }));
 }
 
 /** Cross-surface duplicate-work signal for `report`/`html` (see categorizeSummary). */
