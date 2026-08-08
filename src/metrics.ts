@@ -47,11 +47,20 @@ export interface Metrics {
   /** Trend sessions whose late-half context grew ≥2× without cache keeping pace. */
   bloatedSessions: number;
   contextBloatShare: number;
-  /** Turns arriving after a gap past the cache TTL, and the input-side tokens they re-paid. */
+  /**
+   * Turns arriving after a gap past the cache TTL, and the input-side tokens
+   * they re-paid. Main-loop only, numerator AND denominator: a subagent run is
+   * a back-to-back burst that never idles, so counting its fresh input in the
+   * denominator would dilute the ratio toward zero while contributing almost
+   * nothing to the top — and its remedy (batch prompts, split idle work) is
+   * not something anyone can apply to a run that is spawned and exits.
+   */
   coldRestartTurns: number;
   coldRestartTokens: number;
-  /** Re-paid tokens as a share of all fresh-paid input (input + cache writes). */
+  /** Re-paid tokens as a share of main-loop fresh-paid input (input + cache writes). */
   coldRestartShare: number;
+  /** That denominator, carried so a team merge can recombine the ratio exactly. */
+  coldRestartBaseTokens: number;
   /** Premium-model tokens spent on exploration/conversation turns. */
   premiumWasteTokens: number;
   premiumWasteShare: number;
@@ -81,6 +90,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   let costUsd = 0, costEstimated = false, unpriced = 0, errorEvents = 0;
   let premiumWasteTokens = 0;
   let subagentSpendTokens = 0;
+  let mainFreshPaid = 0;
   const subagentSessions = new Set<string>();
 
   // Rework: group by session, walk chronologically, count spend after first failed event.
@@ -91,6 +101,8 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     if (e.is_sidechain) {
       subagentSessions.add(e.session_id);
       subagentSpendTokens += e.input_tokens + e.output_tokens;
+    } else {
+      mainFreshPaid += e.input_tokens + e.cache_creation_tokens;
     }
     input += e.input_tokens;
     output += e.output_tokens;
@@ -145,10 +157,13 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
 
     // Session hygiene: a gap past the cache TTL means this turn re-paid its
     // context as fresh input / a new cache write instead of a cheap read.
-    for (let i = 1; i < arr.length; i++) {
-      if (Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
-        coldRestartTurns++;
-        coldRestartTokens += arr[i].input_tokens + arr[i].cache_creation_tokens;
+    // Subagent runs sit out both sides of this ratio — see coldRestartShare.
+    if (!arr[0].is_sidechain) {
+      for (let i = 1; i < arr.length; i++) {
+        if (Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts) > CACHE_TTL_MS) {
+          coldRestartTurns++;
+          coldRestartTokens += arr[i].input_tokens + arr[i].cache_creation_tokens;
+        }
       }
     }
 
@@ -201,7 +216,8 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     contextBloatShare: trendSessions ? bloatedSessions / trendSessions : 0,
     coldRestartTurns,
     coldRestartTokens,
-    coldRestartShare: input + cacheCreate ? coldRestartTokens / (input + cacheCreate) : 0,
+    coldRestartShare: mainFreshPaid ? coldRestartTokens / mainFreshPaid : 0,
+    coldRestartBaseTokens: mainFreshPaid,
     premiumWasteTokens,
     premiumWasteShare: spendTokens ? premiumWasteTokens / spendTokens : 0,
     retryTokens,

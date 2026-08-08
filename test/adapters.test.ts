@@ -9,7 +9,7 @@ import { collectCursor } from '../src/adapters/cursor.js';
 import { collectAntigravity } from '../src/adapters/antigravity.js';
 import { collectCopilot } from '../src/adapters/copilot.js';
 import { makeCursorFixture, makeAntigravityFixture } from './helpers.js';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 // dist/test/ -> repo root -> test/fixtures
@@ -423,4 +423,21 @@ test('claude-code: a malformed agent file costs its own turns, not the collect',
   writeAgent(join(dir, 's5', 'subagents'), 'agent-ggg777.jsonl', [agentLine('g1', 's5', 'ggg777', '/w/dev/repo-c')]);
   const { events } = collectClaudeCode(base);
   assert.deepEqual(events.map((e) => e.eventKey).sort(), ['g1', 'm1']);
+});
+
+test('claude-code: a symlinked transcript is still collected', () => {
+  // Archived sessions symlinked back into place: Dirent types are lstat-based,
+  // so an isFile() gate would drop the whole session with no note.
+  const base = mkdtempSync(join(tmpdir(), 'cc-symlink-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  const archive = join(base, 'archive.jsonl');
+  writeFileSync(archive, claudeLine('s61', 's6', '/w/dev/repo-arch'));
+  symlinkSync(archive, join(dir, 's6.jsonl'));
+  // A dangling link must be skipped, not thrown on.
+  symlinkSync(join(base, 'gone.jsonl'), join(dir, 's7.jsonl'));
+
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].project, 'repo-arch');
 });

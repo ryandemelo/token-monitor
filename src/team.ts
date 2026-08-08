@@ -188,7 +188,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     cacheHitRatio: 0, reworkTokens: 0, reworkRatio: 0, errorEvents: 0,
     byActivity, byModel, thinkToCodeRatio: 0,
     trendSessions: 0, bloatedSessions: 0, contextBloatShare: 0,
-    coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0,
+    coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0, coldRestartBaseTokens: 0,
     premiumWasteTokens: 0, premiumWasteShare: 0,
     retryTokens: 0, retryShare: 0,
     subagentSessions: 0, subagentSpendTokens: 0, subagentShare: 0,
@@ -212,6 +212,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.bloatedSessions += m.bloatedSessions ?? 0;
     out.coldRestartTurns += m.coldRestartTurns ?? 0;
     out.coldRestartTokens += m.coldRestartTokens ?? 0;
+    // Pre-0.12 exports have no main-loop denominator because they had no
+    // subagent data at all — their own fresh-paid input IS the right base.
+    out.coldRestartBaseTokens += m.coldRestartBaseTokens ?? (m.inputTokens + m.cacheCreationTokens);
     out.premiumWasteTokens += m.premiumWasteTokens ?? 0;
     out.retryTokens += m.retryTokens ?? 0;
     out.subagentSessions += m.subagentSessions ?? 0;
@@ -233,8 +236,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   out.cacheHitRatio = denom ? out.cacheReadTokens / denom : 0;
   out.reworkRatio = out.spendTokens ? out.reworkTokens / out.spendTokens : 0;
   out.contextBloatShare = out.trendSessions ? out.bloatedSessions / out.trendSessions : 0;
-  const freshPaid = out.inputTokens + out.cacheCreationTokens;
-  out.coldRestartShare = freshPaid ? out.coldRestartTokens / freshPaid : 0;
+  out.coldRestartShare = out.coldRestartBaseTokens
+    ? out.coldRestartTokens / out.coldRestartBaseTokens
+    : 0;
   out.premiumWasteShare = out.spendTokens ? out.premiumWasteTokens / out.spendTokens : 0;
   out.retryShare = out.spendTokens ? out.retryTokens / out.spendTokens : 0;
   // Pre-0.12 exports carry no subagent fields at all, so a team share is a

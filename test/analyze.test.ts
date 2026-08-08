@@ -208,3 +208,27 @@ test('the LLM payload carries the subagent share but never agent-type names', ()
   assert.ok(!json.includes('general-purpose'));
   assert.ok(!json.includes('p1')); // no session ids either
 });
+
+test('the LLM payload marks subagent runs and keeps them out of the bloat lists', () => {
+  const turnsOf = (id: string, sidechain: boolean, n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      makeStored({
+        session_id: id,
+        is_sidechain: sidechain ? 1 : 0,
+        parent_session_id: sidechain ? 'human' : null,
+        ts: `2026-06-01T1${Math.floor(i / 10)}:${String(i % 10).padStart(2, '0')}:00Z`,
+        input_tokens: 50_000,
+        output_tokens: 100,
+      }),
+    );
+  const events = [...turnsOf('human', false, 12), ...Array.from({ length: 20 }, (_, i) => turnsOf(`a${i}`, true, 40)).flat()];
+  const deep = deepAnalysis(events);
+  // Context-heavy is a bloat proxy: agent runs never appear, however chatty.
+  assert.ok(deep.contextHeavySessions.every((s) => !s.isSidechain));
+  assert.ok(deep.coldRestartSessions.every((s) => !s.isSidechain));
+  // Expensive sessions stay inclusive — a runaway run is worth seeing — but
+  // every emitted row says which kind it is.
+  const payload = buildLlmPayload(events, 30) as { expensiveSessions: Array<{ isSidechain: boolean }> };
+  assert.ok(payload.expensiveSessions.some((s) => s.isSidechain));
+  assert.ok(payload.expensiveSessions.every((s) => typeof s.isSidechain === 'boolean'));
+});

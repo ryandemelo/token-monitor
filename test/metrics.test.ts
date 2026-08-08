@@ -165,17 +165,47 @@ test('a window with no fan-out reports a zero subagent share, not NaN', () => {
   assert.equal(computeMetrics([]).subagentShare, 0);
 });
 
-test('per-session hygiene math stays per-transcript: a fan-out is not one long session', () => {
-  // Two agent runs interleaved in time under one parent. Folded into the
-  // parent they would look like cold restarts; kept apart they are not.
+test('per-session hygiene math stays per-transcript, not per root session', () => {
+  // Two conversations interleaved in time. Grouped per transcript each shows
+  // one gap; merged on a single timeline they would show three.
   const m = computeMetrics([
-    makeStored({ session_id: 'a1', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:00:00Z' }),
-    makeStored({ session_id: 'a2', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:20:00Z' }),
-    makeStored({ session_id: 'a1', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T10:40:00Z' }),
-    makeStored({ session_id: 'a2', parent_session_id: 'p', is_sidechain: 1, ts: '2026-06-01T11:00:00Z' }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:00:00Z' }),
+    makeStored({ session_id: 's2', ts: '2026-06-01T10:20:00Z' }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:40:00Z' }),
+    makeStored({ session_id: 's2', ts: '2026-06-01T11:00:00Z' }),
   ]);
-  assert.equal(m.sessions, 1);
-  assert.equal(m.coldRestartTurns, 2); // one per run, not three across a merged timeline
+  assert.equal(m.coldRestartTurns, 2);
+});
+
+test('cold restarts exclude subagent runs on BOTH sides of the ratio', () => {
+  const human = [
+    makeStored({ session_id: 's1', ts: '2026-06-01T10:00:00Z', input_tokens: 100, cache_creation_tokens: 0 }),
+    makeStored({ session_id: 's1', ts: '2026-06-01T11:00:00Z', input_tokens: 300, cache_creation_tokens: 0 }),
+  ];
+  const alone = computeMetrics(human);
+  assert.equal(alone.coldRestartTurns, 1);
+  assert.equal(alone.coldRestartTokens, 300);
+  assert.equal(alone.coldRestartShare, 0.75); // 300 re-paid of 400 fresh-paid
+
+  // A fan-out of gap-free runs carrying far more fresh input must not move it:
+  // an agent run is a burst that never idles, so counting its input in the
+  // denominator would push a real hygiene problem below its finding threshold.
+  const withFanOut = computeMetrics([
+    ...human,
+    ...Array.from({ length: 10 }, (_, i) =>
+      makeStored({
+        session_id: `a${i}`,
+        parent_session_id: 's1',
+        is_sidechain: 1,
+        ts: `2026-06-01T12:0${i}:00Z`,
+        input_tokens: 1000,
+        cache_creation_tokens: 0,
+      }),
+    ),
+  ]);
+  assert.equal(withFanOut.coldRestartTurns, 1);
+  assert.equal(withFanOut.coldRestartShare, 0.75);
+  assert.equal(withFanOut.coldRestartBaseTokens, 400);
 });
 
 test('subagent runs are excluded from the context-bloat denominator', () => {

@@ -96,6 +96,13 @@ interface SessionInfo {
   date: string;
   m: Metrics;
   events: StoredEvent[];
+  /**
+   * One subagent run rather than a conversation. Context-bloat pricing and
+   * evidence skip these, because `contextBloatShare` — the metric that gates
+   * the finding — excludes them: scoring a fan-out here would bill the user
+   * for sessions the gate never counted and cite runs nobody can compact.
+   */
+  isSidechain: boolean;
 }
 
 /** $/token rates blended over the user's actual model mix in the window. */
@@ -187,7 +194,7 @@ const SCORERS: Record<string, (s: SessionInfo) => { score: number; label: string
     label: `${fmtTokens(premiumTokensOf(s.m))} premium tok`,
   }),
   'context-bloat': (s) => {
-    const growth = contextGrowthOf(s.events);
+    const growth = s.isSidechain ? undefined : contextGrowthOf(s.events);
     return {
       score: growth && growth.ratio >= 2 ? bloatAvoidableTokens(s.events) : 0,
       label: `ctx ×${growth ? growth.ratio.toFixed(1) : '?'} · ${fmtTokens(bloatAvoidableTokens(s.events))} avoidable`,
@@ -236,7 +243,7 @@ function savingsUsd(
     }
     case 'context-bloat': {
       const avoidable = sessions.reduce((s, info) => {
-        const g = contextGrowthOf(info.events);
+        const g = info.isSidechain ? undefined : contextGrowthOf(info.events);
         return g && g.ratio >= 2 ? s + bloatAvoidableTokens(info.events) : s;
       }, 0);
       // Conservative: avoided fresh context would have been cache reads at best.
@@ -258,6 +265,7 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
     date: evs[0].ts.slice(0, 10),
     m: computeMetrics(evs),
     events: evs,
+    isSidechain: evs[0].is_sidechain === 1,
   }));
   const rates = blendedRates(m);
   const monthly = days > 0 ? 30 / days : 1;

@@ -221,7 +221,7 @@ function* agentTranscripts(dir: string, depth = 0): Generator<string> {
   for (const ent of entries) {
     const p = join(dir, ent.name);
     if (ent.isDirectory()) yield* agentTranscripts(p, depth + 1);
-    else if (ent.isFile() && ent.name.startsWith('agent-') && ent.name.endsWith('.jsonl')) yield p;
+    else if (ent.name.startsWith('agent-') && ent.name.endsWith('.jsonl')) yield p;
   }
 }
 
@@ -284,7 +284,11 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
     // subagent runs below inherit.
     const mainTurns: ParsedTurn[] = [];
     for (const ent of entries) {
-      if (!ent.isFile() || !ent.name.endsWith('.jsonl')) continue;
+      // Anything that isn't a directory: Dirent types are lstat-based, so an
+      // archived transcript symlinked back into place reports as neither file
+      // nor directory, and an isFile() test would silently drop the whole
+      // session. readText's try/catch handles a dangling link.
+      if (ent.isDirectory() || !ent.name.endsWith('.jsonl')) continue;
       filesScanned++;
       const text = readText(join(dirPath, ent.name));
       if (text === undefined) continue;

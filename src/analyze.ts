@@ -57,7 +57,9 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
       if (prev === 'testing' && e.activity === 'coding') fixes++;
       prev = e.activity;
       const ts = Date.parse(e.ts);
-      if (prevTs !== undefined && ts - prevTs > CACHE_TTL_MS) {
+      // Cold restarts are a main-loop signal on both sides of the ratio (see
+      // Metrics.coldRestartShare); a subagent run never idles.
+      if (prevTs !== undefined && !e.is_sidechain && ts - prevTs > CACHE_TTL_MS) {
         coldTurns++;
         coldTokens += e.input_tokens + e.cache_creation_tokens;
       }
@@ -225,7 +227,10 @@ export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
       .sort((a, b) => b.fixIterations - a.fixIterations)
       .slice(0, 8),
     contextHeavySessions: stats
-      .filter((s) => s.turns >= 10)
+      // avgContextTokens is a bloat proxy, so this list follows the same rule
+      // as the trend: agent runs outnumber conversations ~14:1 and would
+      // otherwise fill every row with sessions nobody can compact.
+      .filter((s) => !s.isSidechain && s.turns >= 10)
       .sort((a, b) => b.avgContextTokens - a.avgContextTokens)
       .slice(0, 8),
     bloatTrendSessions: stats
@@ -269,6 +274,9 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
     coldRestartTokens: s.coldRestartTokens,
     durationMin: s.durationMin,
     dominant: s.dominant,
+    // A boolean, not a type name: the model must not read a 40-turn agent run
+    // as a 40-turn conversation and prescribe "compact this session".
+    isSidechain: s.isSidechain,
   });
   return {
     windowDays: days,
@@ -340,7 +348,7 @@ export const TRACKABLE_METRICS: MetricKey[] = [
 ];
 
 const METRIC_DEFINITIONS =
-  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over all fresh-paid input. premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Session rows with isSidechain=true are ONE subagent run, not a conversation: never advise compacting, restarting or batching them (they are spawned fresh and exit), and note that contextBloatShare and coldRestartShare are measured over main-loop sessions only. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
 
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.
