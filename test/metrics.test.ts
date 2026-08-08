@@ -300,7 +300,29 @@ test('extendedCacheOpportunity counts only gaps the 1h cache would have covered'
     ...ttlSession('already-extended', 20, '1h', 3), // has the feature already
   ];
   const opp = extendedCacheOpportunity(s);
-  assert.equal(opp.sessions, 1);
+  assert.equal(opp.sessions, 1, 'only the in-window session benefits');
   assert.equal(opp.recoverableTokens, 2 * 5000); // 2 gaps x (1000 input + 4000 write)
-  assert.equal(opp.writeTokens, 3 * 4000);
+  // Both 5-minute sessions pay the premium once the tier is switched on; the
+  // one already on the extended tier does not.
+  assert.equal(opp.writeTokens, 2 * (3 * 4000));
+});
+
+test('the extended-cache premium is charged to every 5m session, not just the ones it helps', () => {
+  // Enabling the 1-hour cache is a setting, not a per-session choice: a 5m
+  // session with no recoverable gap still starts paying the higher write
+  // premium, so quoting a net saving without it is a number the user can't get.
+  const withGap = ttlSession('a', 20, '5m', 3);
+  const gapFree = Array.from({ length: 10 }, (_, i) =>
+    makeStored({ session_id: 'b', ts: new Date(Date.parse('2026-06-01T10:00:00Z') + i * 60_000).toISOString(),
+      input_tokens: 1000, cache_creation_tokens: 4000, output_tokens: 0 }),
+  );
+  const alone = extendedCacheOpportunity(withGap);
+  const both = extendedCacheOpportunity([...withGap, ...gapFree]);
+  assert.equal(both.recoverableTokens, alone.recoverableTokens, 'gap-free session recovers nothing');
+  assert.equal(both.sessions, alone.sessions, '...and is not counted as a beneficiary');
+  assert.equal(both.writeTokens, alone.writeTokens + 10 * 4000, 'but its writes DO pay the premium');
+
+  // A session already on the extended tier is unaffected either way.
+  const withExtended = extendedCacheOpportunity([...withGap, ...ttlSession('c', 20, '1h', 5)]);
+  assert.equal(withExtended.writeTokens, alone.writeTokens);
 });

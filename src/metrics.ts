@@ -280,12 +280,17 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
 /**
  * What switching to the 1-hour cache could recover, for the sessions still on
  * the 5-minute default: the input they re-paid resuming after a gap that the
- * extended TTL would have covered (5 min < gap <= 1 h), plus the cache writes
- * that would pay the higher extended-tier premium in exchange.
+ * extended TTL would have covered (5 min < gap <= 1 h).
  *
  * Gaps longer than an hour are excluded — the extended cache would not have
  * saved those either, so counting them would oversell the switch. Sessions
  * already on the extended tier contribute nothing: they have the feature.
+ *
+ * `writeTokens` is the cost side, and it deliberately covers EVERY 5-minute
+ * session, including those with no recoverable gap at all. The cache tier is
+ * a setting, not a per-session choice: turning it on makes all of those
+ * sessions pay the higher write premium, so charging only the ones that
+ * benefit would quote a net saving the user cannot actually get.
  */
 export function extendedCacheOpportunity(events: StoredEvent[]): {
   recoverableTokens: number;
@@ -295,7 +300,9 @@ export function extendedCacheOpportunity(events: StoredEvent[]): {
   let recoverableTokens = 0, writeTokens = 0, sessions = 0;
   for (const [, all] of groupBy(events, 'session_id')) {
     const arr = all.filter((e) => !e.is_sidechain);
-    if (arr.length < 2 || effectiveCacheTtlOf(arr) !== CACHE_TTL_MS) continue;
+    if (arr.length === 0 || effectiveCacheTtlOf(arr) !== CACHE_TTL_MS) continue;
+    // Cost side: every 5-minute session starts paying the premium.
+    writeTokens += arr.reduce((t, e) => t + e.cache_creation_tokens, 0);
     let recovered = 0;
     for (let i = 1; i < arr.length; i++) {
       const gap = Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts);
@@ -306,7 +313,6 @@ export function extendedCacheOpportunity(events: StoredEvent[]): {
     if (recovered === 0) continue;
     sessions++;
     recoverableTokens += recovered;
-    writeTokens += arr.reduce((t, e) => t + e.cache_creation_tokens, 0);
   }
   return { recoverableTokens, writeTokens, sessions };
 }

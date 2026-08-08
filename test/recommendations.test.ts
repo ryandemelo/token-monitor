@@ -229,3 +229,29 @@ test('context-bloat savings and evidence ignore subagent runs', () => {
   assert.equal(after.savingsUsdPerMonth, before.savingsUsdPerMonth);
   assert.ok(!JSON.stringify(after.evidence).includes('agentville'));
 });
+
+test('the extended-write premium blends over one population, not two', () => {
+  // cacheWrite blended over every model and cacheWrite1h over only the models
+  // that publish it would let a vendor which does not bill cache writes drag
+  // the subtraction apart. Anthropic-only truth for opus-5: 10 - 6.25 = 3.75.
+  const anthropicOnly = blendedRates({
+    spendTokens: 1e6, costUsd: 5, costEstimated: false,
+    byModel: { 'claude-opus-5': { tokens: 1e6, costUsd: 5 } },
+  } as never);
+  assert.ok(Math.abs(anthropicOnly.extendedWritePremium * 1e6 - 3.75) < 1e-9);
+
+  // Adding a vendor with no extended tier must not move the premium at all.
+  const mixed = blendedRates({
+    spendTokens: 2e6, costUsd: 10, costEstimated: false,
+    byModel: { 'claude-opus-5': { tokens: 1e6, costUsd: 5 }, 'gemini-3-flash': { tokens: 1e6, costUsd: 5 } },
+  } as never);
+  assert.ok(Math.abs(mixed.extendedWritePremium * 1e6 - 3.75) < 1e-9);
+
+  // No extended-tier pricing in the mix at all -> no premium, and the
+  // recommendation stays silent rather than guessing one.
+  const none = blendedRates({
+    spendTokens: 1e6, costUsd: 5, costEstimated: false,
+    byModel: { 'gemini-3-flash': { tokens: 1e6, costUsd: 5 } },
+  } as never);
+  assert.equal(none.extendedWritePremium, 0);
+});

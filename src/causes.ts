@@ -59,7 +59,10 @@ function decomposeCacheHit(sessions: StoredEvent[][]): Cause[] {
     const sidechain = arr.some((e) => e.is_sidechain === 1);
     // Mirror metrics.ts on the TTL too: a 1h-cache session's 20-minute gap is
     // a cache hit, so its fresh input is steady-state, not a cold restart.
-    const ttl = effectiveCacheTtlOf(arr);
+    // Classified over the same main-loop rows metrics.ts uses, so a mixed
+    // group (legacy inlined sidechain turns) can't land on a different TTL
+    // here than it does in the headline number.
+    const ttl = effectiveCacheTtlOf(arr.filter((e) => !e.is_sidechain));
     const short = !sidechain && arr.length < SHORT_SESSION_TURNS;
     const growth = sidechain ? undefined : contextGrowthOf(arr);
     // Mirror metrics.ts exactly: late-half growth only counts as churn when it

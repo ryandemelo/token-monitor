@@ -120,16 +120,21 @@ export interface BlendedRates {
   premium: number;
   /** Cheapest priced non-premium model the user already runs; tier-assumed when absent. */
   cheap: number;
-  /** Blended 5-minute and 1-hour cache-write rates; `cacheWrite1h` is 0 when
-   *  no model in the mix publishes an extended-tier price. */
-  cacheWrite: number;
-  cacheWrite1h: number;
+  /**
+   * Blended $/token surcharge for writing to the 1-hour cache instead of the
+   * 5-minute one. Averaged over ONLY the models that publish both rates, so
+   * the two halves of the subtraction always describe the same population —
+   * blending the 5m rate over every model would let a vendor that doesn't
+   * bill cache writes at all drag it toward zero and inflate the premium.
+   * 0 when no model in the mix publishes an extended-tier price.
+   */
+  extendedWritePremium: number;
   estimated: boolean;
 }
 
 export function blendedRates(m: Metrics): BlendedRates {
   let wInput = 0, wCacheRead = 0, wTokens = 0;
-  let wWrite = 0, wWrite1h = 0, write1hTokens = 0;
+  let wWritePremium = 0, write1hTokens = 0;
   let premiumCost = 0, premiumTokens = 0;
   let cheap = Infinity;
   let estimated = false;
@@ -143,9 +148,8 @@ export function blendedRates(m: Metrics): BlendedRates {
     if (row.estimated) estimated = true;
     wInput += v.tokens * row.input;
     wCacheRead += v.tokens * row.cacheRead;
-    wWrite += v.tokens * row.cacheWrite;
     if (row.cacheWrite1h !== undefined) {
-      wWrite1h += v.tokens * row.cacheWrite1h;
+      wWritePremium += v.tokens * (row.cacheWrite1h - row.cacheWrite);
       write1hTokens += v.tokens;
     }
     wTokens += v.tokens;
@@ -170,11 +174,7 @@ export function blendedRates(m: Metrics): BlendedRates {
     spend: m.spendTokens ? m.costUsd / m.spendTokens : 0,
     premium,
     cheap,
-    cacheWrite: wTokens ? wWrite / wTokens / 1e6 : 0,
-    // Averaged over the models that actually publish an extended-tier price,
-    // so a mix containing unpriced-for-1h models doesn't dilute the premium
-    // toward zero and oversell the switch.
-    cacheWrite1h: write1hTokens ? wWrite1h / write1hTokens / 1e6 : 0,
+    extendedWritePremium: write1hTokens ? wWritePremium / write1hTokens / 1e6 : 0,
     estimated: estimated || m.costEstimated,
   };
 }
@@ -291,11 +291,11 @@ function savingsUsd(
  * nobody can reproduce.
  */
 function extendedCacheClause(events: StoredEvent[], rates: BlendedRates, monthly: number): string {
-  if (!rates.cacheWrite1h) return ''; // no model in the mix publishes an extended price
+  if (!rates.extendedWritePremium) return ''; // no model in the mix publishes an extended price
   const { recoverableTokens, writeTokens, sessions } = extendedCacheOpportunity(events);
   if (sessions === 0) return '';
   const saved = recoverableTokens * (rates.input - rates.cacheRead);
-  const premium = writeTokens * (rates.cacheWrite1h - rates.cacheWrite);
+  const premium = writeTokens * rates.extendedWritePremium;
   const net = (saved - premium) * monthly;
   if (net < 1) return '';
   return ` ${sessions} of these session(s) run on the 5-minute cache with gaps the 1-hour cache would have covered — enabling it nets about ${fmtUsdShort(net)}/mo after its higher write premium.`;
