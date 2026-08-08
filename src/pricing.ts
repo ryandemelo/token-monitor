@@ -24,7 +24,11 @@ export interface ModelPrice {
 // cacheWrite is 0 for both (their adapters report cacheCreationTokens 0).
 export const PRICES: ModelPrice[] = [
   { match: /claude-fable-5|claude-mythos-5/, input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  { match: /claude-opus-5/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   { match: /claude-opus-4/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  // Standard rate. An introductory $2/$10 runs through 2026-08-31; the table
+  // carries the durable number rather than one that silently goes stale.
+  { match: /claude-sonnet-5/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   { match: /claude-sonnet-4/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   { match: /claude-haiku-4/, input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 
