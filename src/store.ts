@@ -32,6 +32,11 @@ export function openDb(path: string = DEFAULT_DB): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
+    -- relabelEvents and syncIntentProjects look rows up one session at a time.
+    -- Without this every collect ran a full table scan PER SESSION, which was
+    -- survivable at ~150 sessions and became minutes once subagent runs made
+    -- it thousands: measured 8m16s -> 17s on a 165k-row database.
+    CREATE INDEX IF NOT EXISTS idx_events_session ON events(source, session_id);
   `);
   migrate(db);
   return db;

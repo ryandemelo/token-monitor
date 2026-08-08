@@ -206,3 +206,25 @@ test('subagent fields survive the insert/load round trip and dedup by event key'
   assert.equal(agent.agent_type, 'Explore');
   assert.equal(rows.find((r) => r.session_id === 's1')!.is_sidechain, 0);
 });
+
+test('the session index exists on new and pre-existing dbs', () => {
+  // relabelEvents runs one UPDATE per session; without this index each one is
+  // a full table scan, which subagent runs multiply by the fan-out factor.
+  const path = join(mkdtempSync(join(tmpdir(), 'tm-idx-')), 'db.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`CREATE TABLE events (
+    id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_key TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, ts TEXT NOT NULL,
+    model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+    thinking_tokens INTEGER NOT NULL, tools TEXT NOT NULL, has_thinking INTEGER NOT NULL,
+    is_error INTEGER NOT NULL, git_branch TEXT, activity TEXT NOT NULL,
+    UNIQUE(source, event_key))`);
+  legacy.close();
+  for (const db of [openDb(path), openDb(':memory:')]) {
+    const plan = db.prepare(
+      `EXPLAIN QUERY PLAN UPDATE events SET project = 'x' WHERE source = 'claude-code' AND session_id = 's'`,
+    ).all() as Array<{ detail: string }>;
+    assert.match(plan.map((r) => r.detail).join(' '), /idx_events_session/);
+  }
+});
