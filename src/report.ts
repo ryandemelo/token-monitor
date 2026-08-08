@@ -16,7 +16,7 @@ import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote, trendIs
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
-import type { RelayResult } from './relay-scan.js';
+import type { RelayResult, RelaySummary } from './relay-scan.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -95,7 +95,7 @@ const STATUS_LABEL: Record<FollowRow['status'], string> = {
 
 export function renderReport(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary },
+  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary; relay?: RelaySummary },
 ): string {
   if (events.length === 0) {
     return 'No events in range. Run `token-monitor collect` first, or widen --days.';
@@ -142,6 +142,11 @@ export function renderReport(
   if (opts.categorize) {
     out.push(
       `  ${YELLOW}🔁 ${fmtCategorizeSummary(opts.categorize)}${RESET} ${DIM}— run \`categorize\` for detail${RESET}`,
+    );
+  }
+  if (opts.relay) {
+    out.push(
+      `  ${YELLOW}📋 ${fmtRelaySummary(opts.relay)}${RESET} ${DIM}— run \`relay\` for detail${RESET}`,
     );
   }
 
@@ -336,6 +341,12 @@ export function renderCategorize(r: CategorizeResult, days: number): string {
  * dollar figure kept beside it rather than in front of it. The remedy is the
  * point — a file, a subagent, or a skill instead of a clipboard.
  */
+/** Shared wording for the one-line relay callout in report/html. */
+export function fmtRelaySummary(r: RelaySummary): string {
+  const p = r.pairs === 1 ? '1 prompt' : `${r.pairs} prompts`;
+  return `${p} repeated an earlier session's output (${fmtTokens(r.relayedWords)} words carried by hand)`;
+}
+
 export function renderRelay(r: RelayResult): string {
   const out: string[] = [];
   out.push(section(`Relay waste — last ${r.days} days`));

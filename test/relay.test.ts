@@ -171,3 +171,54 @@ test('secrets are redacted before anything is hashed', async () => {
   const leaked = secretShingles.filter((h) => b.has(h)).length;
   assert.ok(leaked <= 1, `secret-bearing shingles must not be stored (found ${leaked})`);
 });
+
+// ---- persisted findings and the cross-surfaced summary ----------------------
+
+import { recordRelayFindings, loadRelayFindings } from '../src/store.js';
+import { relaySummary } from '../src/relay-scan.js';
+
+test('findings persist, a rerun replaces rather than duplicates, and the summary aggregates', () => {
+  const db = openDb(':memory:');
+  const now = new Date().toISOString();
+  const row = (to: string, from: string, wordsN: number, overlap = 1) => ({
+    to_session_id: to, from_session_id: from, to_source: 'claude-code',
+    from_source: 'claude-code', to_project: 'p', overlap, relayed_words: wordsN, to_ts: now,
+  });
+
+  // Nothing recorded yet: the shared surfaces stay silent.
+  assert.equal(relaySummary(db), undefined);
+
+  recordRelayFindings(db, [row('B', 'A', 500), row('C', 'A', 300)]);
+  let s = relaySummary(db)!;
+  assert.equal(s.pairs, 2);
+  assert.equal(s.relayedWords, 800);
+  assert.equal(s.sessions, 2);
+
+  // A later scan with more history can revise a pair — it must replace, not
+  // accumulate, or the totals inflate on every run.
+  recordRelayFindings(db, [row('B', 'A', 900, 0.8)]);
+  assert.equal(loadRelayFindings(db).length, 2);
+  s = relaySummary(db)!;
+  assert.equal(s.relayedWords, 1200);
+
+  // Two pastes into one session are two findings but one affected session.
+  recordRelayFindings(db, [row('B', 'Z', 100)]);
+  assert.equal(relaySummary(db)!.pairs, 3);
+  assert.equal(relaySummary(db)!.sessions, 2);
+
+  // Findings carry ids and counts only — no text, no hashes.
+  const cols = Object.keys(loadRelayFindings(db)[0]).sort();
+  assert.deepEqual(cols, ['from_session_id', 'from_source', 'overlap', 'relayed_words',
+    'to_project', 'to_session_id', 'to_source', 'to_ts']);
+});
+
+test('the relay callout is out of the window once findings age out', () => {
+  const db = openDb(':memory:');
+  const old = new Date(Date.now() - 60 * 86_400_000).toISOString();
+  recordRelayFindings(db, [{
+    to_session_id: 'B', from_session_id: 'A', to_source: 'claude-code', from_source: 'claude-code',
+    to_project: 'p', overlap: 1, relayed_words: 500, to_ts: old,
+  }]);
+  assert.equal(relaySummary(db, { days: 30 }), undefined, 'outside the window');
+  assert.ok(relaySummary(db, { days: 90 }), 'inside a wider one');
+});
