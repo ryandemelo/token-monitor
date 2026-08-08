@@ -441,3 +441,24 @@ test('claude-code: a symlinked transcript is still collected', () => {
   assert.equal(events.length, 1);
   assert.equal(events[0].project, 'repo-arch');
 });
+
+test('claude-code: the 5m/1h cache-write split is parsed, absent means all-5m', () => {
+  const base = mkdtempSync(join(tmpdir(), 'cc-ttl-'));
+  const dir = join(base, 'enc');
+  mkdirSync(dir, { recursive: true });
+  const line = (uuid: string, usage: object) =>
+    JSON.stringify({
+      type: 'assistant', uuid, sessionId: 's1', cwd: '/w/dev/repo', timestamp: '2026-06-01T10:00:00.000Z',
+      message: { model: 'claude-opus-5', usage, content: [] },
+    });
+  writeFileSync(join(dir, 's1.jsonl'), [
+    line('split', { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 1000,
+      cache_creation: { ephemeral_5m_input_tokens: 400, ephemeral_1h_input_tokens: 600 } }),
+    // Older transcripts carry no breakdown: the whole write is 5-minute.
+    line('nosplit', { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 1000 }),
+  ].join('\n'));
+
+  const { events } = collectClaudeCode(base);
+  assert.equal(events.find((e) => e.eventKey === 'split')!.cacheCreation1hTokens, 600);
+  assert.equal(events.find((e) => e.eventKey === 'nosplit')!.cacheCreation1hTokens, 0);
+});

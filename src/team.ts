@@ -192,6 +192,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     premiumWasteTokens: 0, premiumWasteShare: 0,
     retryTokens: 0, retryShare: 0,
     subagentSessions: 0, subagentSpendTokens: 0, subagentShare: 0,
+    extendedCacheTokens: 0, extendedCacheShare: 0, extendedCacheSessions: 0,
   };
   for (const m of list) {
     out.events += m.events;
@@ -219,6 +220,8 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.retryTokens += m.retryTokens ?? 0;
     out.subagentSessions += m.subagentSessions ?? 0;
     out.subagentSpendTokens += m.subagentSpendTokens ?? 0;
+    out.extendedCacheTokens += m.extendedCacheTokens ?? 0;
+    out.extendedCacheSessions += m.extendedCacheSessions ?? 0;
     for (const a of ACTIVITIES) {
       byActivity[a].tokens += m.byActivity[a]?.tokens ?? 0;
       byActivity[a].events += m.byActivity[a]?.events ?? 0;
@@ -244,6 +247,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   // Pre-0.12 exports carry no subagent fields at all, so a team share is a
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;
+  out.extendedCacheShare = out.cacheCreationTokens
+    ? out.extendedCacheTokens / out.cacheCreationTokens
+    : 0;
   out.thinkToCodeRatio =
     (byActivity.thinking.tokens + byActivity.exploration.tokens) / (byActivity.coding.tokens || 1);
   return out;

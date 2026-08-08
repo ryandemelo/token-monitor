@@ -41,6 +41,18 @@ function fmtCost(m: Metrics): string {
  * five of six sources never produce sidechain turns, and a permanent "0%" on
  * their reports would be noise pretending to be a measurement.
  */
+/**
+ * How the cold-restart number was measured. Silent unless some sessions used
+ * the extended cache — otherwise every report would carry a "~5 min" aside
+ * that has always been true and tells the reader nothing.
+ */
+export function fmtCacheTtl(m: Metrics): string {
+  if (!m.extendedCacheSessions) return '';
+  return m.extendedCacheSessions === m.sessions
+    ? '  ·  gaps measured against the 1h cache (every session)'
+    : `  ·  gaps measured against the 1h cache on ${m.extendedCacheSessions} of ${m.sessions} sessions`;
+}
+
 export function fmtSubagents(m: Metrics): string {
   if (!m.subagentSessions) return '';
   const runs = m.subagentSessions === 1 ? '1 run' : `${m.subagentSessions} runs`;
@@ -117,7 +129,7 @@ export function renderReport(
     `\n  ${DIM}rework ratio ${(m.reworkRatio * 100).toFixed(1)}%  ·  think:code ${m.thinkToCodeRatio.toFixed(2)}  ·  ${m.errorEvents} turns hit tool errors${RESET}`,
   );
   out.push(
-    `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${fmtSubagents(m)}${RESET}`,
+    `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${fmtSubagents(m)}${fmtCacheTtl(m)}${RESET}`,
   );
   if (opts.categorize) {
     out.push(

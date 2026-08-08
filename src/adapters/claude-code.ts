@@ -49,6 +49,15 @@ interface ClaudeLine {
       output_tokens?: number;
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
+      /**
+       * Per-TTL breakdown of cache_creation_input_tokens. Present on every
+       * assistant line current Claude Code writes; absent on older
+       * transcripts, where the whole write is 5-minute by definition.
+       */
+      cache_creation?: {
+        ephemeral_5m_input_tokens?: number;
+        ephemeral_1h_input_tokens?: number;
+      };
     };
     // User messages can be a plain string or a block array; assistant messages
     // are always a block array.
@@ -162,6 +171,7 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
       outputTokens: u.output_tokens ?? 0,
       cacheReadTokens: u.cache_read_input_tokens ?? 0,
       cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+      cacheCreation1hTokens: u.cache_creation?.ephemeral_1h_input_tokens ?? 0,
       thinkingTokens: 0,
       tools,
       commands,

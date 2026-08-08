@@ -31,6 +31,13 @@ export interface UsageEvent {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /**
+   * The share of cacheCreationTokens written against the 1-HOUR ephemeral
+   * cache rather than the default 5-minute one. Only Claude Code reports the
+   * split; absent (treated as 0) everywhere else, which keeps every other
+   * source on the 5-minute assumption it has always used.
+   */
+  cacheCreation1hTokens?: number;
   /** Reported separately only by some vendors (Gemini); 0 when unknown. */
   thinkingTokens: number;
   /** Names of tools invoked in this turn. */

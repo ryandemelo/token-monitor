@@ -12,6 +12,13 @@ export interface ModelPrice {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /**
+   * Write rate for the 1-hour ephemeral cache (Anthropic: 2x input, vs 1.25x
+   * for the 5-minute default). Absent where a vendor has no extended tier or
+   * doesn't bill writes at all — the extended-cache recommendation simply
+   * doesn't fire for those models rather than guessing a premium.
+   */
+  cacheWrite1h?: number;
   estimated?: boolean;
 }
 
@@ -23,14 +30,14 @@ export interface ModelPrice {
 // hour rather than per write-token, and OpenAI doesn't bill cache writes —
 // cacheWrite is 0 for both (their adapters report cacheCreationTokens 0).
 export const PRICES: ModelPrice[] = [
-  { match: /claude-fable-5|claude-mythos-5/, input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-  { match: /claude-opus-5/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  { match: /claude-opus-4/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  { match: /claude-fable-5|claude-mythos-5/, input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5, cacheWrite1h: 20 },
+  { match: /claude-opus-5/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
+  { match: /claude-opus-4/, input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   // Standard rate. An introductory $2/$10 runs through 2026-08-31; the table
   // carries the durable number rather than one that silently goes stale.
-  { match: /claude-sonnet-5/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { match: /claude-sonnet-4/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { match: /claude-haiku-4/, input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  { match: /claude-sonnet-5/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
+  { match: /claude-sonnet-4/, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
+  { match: /claude-haiku-4/, input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
 
   { match: /gemini-3\.5-flash/, input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 },
   { match: /gemini-3.*-pro/, input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },

@@ -5,6 +5,31 @@ import { costOf, PREMIUM_MODEL_RE } from './pricing.js';
 
 /** Anthropic's default prompt-cache TTL — gaps past this re-pay the context. */
 export const CACHE_TTL_MS = 5 * 60_000;
+/** The opt-in extended TTL. A gap under this is still a cache hit, not a re-pay. */
+export const EXTENDED_CACHE_TTL_MS = 60 * 60_000;
+
+/**
+ * Which TTL a session's gaps should be measured against.
+ *
+ * A session that writes most of its cache against the 1-hour ephemeral tier
+ * genuinely keeps its context warm for an hour, so scoring its 20-minute gaps
+ * as "re-paid the whole context" invents a problem the user does not have —
+ * and a false finding costs more trust than a missed one. The decision is made
+ * once per session rather than per turn: one number the report can name and a
+ * user can check by hand, instead of a per-turn rule nobody can reproduce.
+ *
+ * Rows without the split (every non-Claude-Code source, and everything
+ * collected before 0.12) report 0 here and land on the 5-minute default — the
+ * exact assumption they were already measured under, so no history moves.
+ */
+export function effectiveCacheTtlOf(rows: StoredEvent[]): number {
+  let writes = 0, extended = 0;
+  for (const e of rows) {
+    writes += e.cache_creation_tokens;
+    extended += e.cache_creation_1h_tokens ?? 0;
+  }
+  return writes > 0 && extended * 2 >= writes ? EXTENDED_CACHE_TTL_MS : CACHE_TTL_MS;
+}
 /** Sessions need this many turns before a context-bloat trend is measurable. */
 export const BLOAT_MIN_TURNS = 8;
 export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
@@ -67,6 +92,16 @@ export interface Metrics {
   /** Tokens on turns re-running a tool that errored in the immediately previous turn. */
   retryTokens: number;
   retryShare: number;
+  /**
+   * Cache-write tokens on the 1-hour ephemeral tier, and their share of all
+   * cache writes — main loop AND subagent runs, which routinely sit on
+   * different tiers, so this window-wide share is NOT the per-session
+   * classifier. Sessions are classified individually (effectiveCacheTtlOf).
+   */
+  extendedCacheTokens: number;
+  extendedCacheShare: number;
+  /** Sessions whose gaps were scored against the 1-hour TTL, not 5 minutes. */
+  extendedCacheSessions: number;
   /** Subagent (sidechain) runs seen in the window, and what they spent. */
   subagentSessions: number;
   subagentSpendTokens: number;
@@ -91,6 +126,8 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   let premiumWasteTokens = 0;
   let subagentSpendTokens = 0;
   let mainFreshPaid = 0;
+  let extendedCacheTokens = 0;
+  let extendedCacheSessions = 0;
   const subagentSessions = new Set<string>();
 
   // Rework: group by session, walk chronologically, count spend after first failed event.
@@ -106,6 +143,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     } else {
       mainFreshPaid += e.input_tokens + e.cache_creation_tokens;
     }
+    extendedCacheTokens += e.cache_creation_1h_tokens ?? 0;
     input += e.input_tokens;
     output += e.output_tokens;
     cacheRead += e.cache_read_tokens;
@@ -166,8 +204,10 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     // Session hygiene: a gap past the cache TTL means this turn re-paid its
     // context as fresh input / a new cache write instead of a cheap read.
     // Subagent runs sit out both sides of this ratio — see coldRestartShare.
+    const ttl = effectiveCacheTtlOf(mainRows);
+    if (ttl === EXTENDED_CACHE_TTL_MS) extendedCacheSessions++;
     for (let i = 1; i < mainRows.length; i++) {
-      if (Date.parse(mainRows[i].ts) - Date.parse(mainRows[i - 1].ts) > CACHE_TTL_MS) {
+      if (Date.parse(mainRows[i].ts) - Date.parse(mainRows[i - 1].ts) > ttl) {
         coldRestartTurns++;
         coldRestartTokens += mainRows[i].input_tokens + mainRows[i].cache_creation_tokens;
       }
@@ -228,10 +268,47 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     premiumWasteShare: spendTokens ? premiumWasteTokens / spendTokens : 0,
     retryTokens,
     retryShare: spendTokens ? retryTokens / spendTokens : 0,
+    extendedCacheTokens,
+    extendedCacheShare: cacheCreate ? extendedCacheTokens / cacheCreate : 0,
+    extendedCacheSessions,
     subagentSessions: subagentSessions.size,
     subagentSpendTokens,
     subagentShare: spendTokens ? subagentSpendTokens / spendTokens : 0,
   };
+}
+
+/**
+ * What switching to the 1-hour cache could recover, for the sessions still on
+ * the 5-minute default: the input they re-paid resuming after a gap that the
+ * extended TTL would have covered (5 min < gap <= 1 h), plus the cache writes
+ * that would pay the higher extended-tier premium in exchange.
+ *
+ * Gaps longer than an hour are excluded — the extended cache would not have
+ * saved those either, so counting them would oversell the switch. Sessions
+ * already on the extended tier contribute nothing: they have the feature.
+ */
+export function extendedCacheOpportunity(events: StoredEvent[]): {
+  recoverableTokens: number;
+  writeTokens: number;
+  sessions: number;
+} {
+  let recoverableTokens = 0, writeTokens = 0, sessions = 0;
+  for (const [, all] of groupBy(events, 'session_id')) {
+    const arr = all.filter((e) => !e.is_sidechain);
+    if (arr.length < 2 || effectiveCacheTtlOf(arr) !== CACHE_TTL_MS) continue;
+    let recovered = 0;
+    for (let i = 1; i < arr.length; i++) {
+      const gap = Date.parse(arr[i].ts) - Date.parse(arr[i - 1].ts);
+      if (gap > CACHE_TTL_MS && gap <= EXTENDED_CACHE_TTL_MS) {
+        recovered += arr[i].input_tokens + arr[i].cache_creation_tokens;
+      }
+    }
+    if (recovered === 0) continue;
+    sessions++;
+    recoverableTokens += recovered;
+    writeTokens += arr.reduce((t, e) => t + e.cache_creation_tokens, 0);
+  }
+  return { recoverableTokens, writeTokens, sessions };
 }
 
 export function parseTools(tools: string): string[] {

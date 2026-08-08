@@ -1,5 +1,5 @@
 import type { Metrics } from './metrics.js';
-import { computeMetrics, groupBy, contextGrowthOf, BLOAT_MIN_TURNS } from './metrics.js';
+import { computeMetrics, groupBy, contextGrowthOf, extendedCacheOpportunity, BLOAT_MIN_TURNS } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import type { Finding, FollowRow, MetricKey } from './followthrough.js';
 import { structuredFindings, premiumShare, fmtMetric } from './followthrough.js';
@@ -120,11 +120,16 @@ export interface BlendedRates {
   premium: number;
   /** Cheapest priced non-premium model the user already runs; tier-assumed when absent. */
   cheap: number;
+  /** Blended 5-minute and 1-hour cache-write rates; `cacheWrite1h` is 0 when
+   *  no model in the mix publishes an extended-tier price. */
+  cacheWrite: number;
+  cacheWrite1h: number;
   estimated: boolean;
 }
 
 export function blendedRates(m: Metrics): BlendedRates {
   let wInput = 0, wCacheRead = 0, wTokens = 0;
+  let wWrite = 0, wWrite1h = 0, write1hTokens = 0;
   let premiumCost = 0, premiumTokens = 0;
   let cheap = Infinity;
   let estimated = false;
@@ -138,6 +143,11 @@ export function blendedRates(m: Metrics): BlendedRates {
     if (row.estimated) estimated = true;
     wInput += v.tokens * row.input;
     wCacheRead += v.tokens * row.cacheRead;
+    wWrite += v.tokens * row.cacheWrite;
+    if (row.cacheWrite1h !== undefined) {
+      wWrite1h += v.tokens * row.cacheWrite1h;
+      write1hTokens += v.tokens;
+    }
     wTokens += v.tokens;
     const rate = v.costUsd / v.tokens;
     if (PREMIUM_MODEL_RE.test(model)) {
@@ -160,6 +170,11 @@ export function blendedRates(m: Metrics): BlendedRates {
     spend: m.spendTokens ? m.costUsd / m.spendTokens : 0,
     premium,
     cheap,
+    cacheWrite: wTokens ? wWrite / wTokens / 1e6 : 0,
+    // Averaged over the models that actually publish an extended-tier price,
+    // so a mix containing unpriced-for-1h models doesn't dilute the premium
+    // toward zero and oversell the switch.
+    cacheWrite1h: write1hTokens ? wWrite1h / write1hTokens / 1e6 : 0,
     estimated: estimated || m.costEstimated,
   };
 }
@@ -266,6 +281,26 @@ function savingsUsd(
   }
 }
 
+/**
+ * The other way to stop re-paying context: turn the 1-hour cache on. Priced
+ * as a net — what the covered gaps would stop costing, minus the higher write
+ * premium those sessions would start paying — and stated only when the net is
+ * positive and material. Deliberately NOT folded into the finding's
+ * `savingsUsdPerMonth`, which stays the "reach the target" number: two
+ * different remedies with two different price tags, not one blended figure
+ * nobody can reproduce.
+ */
+function extendedCacheClause(events: StoredEvent[], rates: BlendedRates, monthly: number): string {
+  if (!rates.cacheWrite1h) return ''; // no model in the mix publishes an extended price
+  const { recoverableTokens, writeTokens, sessions } = extendedCacheOpportunity(events);
+  if (sessions === 0) return '';
+  const saved = recoverableTokens * (rates.input - rates.cacheRead);
+  const premium = writeTokens * (rates.cacheWrite1h - rates.cacheWrite);
+  const net = (saved - premium) * monthly;
+  if (net < 1) return '';
+  return ` ${sessions} of these session(s) run on the 5-minute cache with gaps the 1-hour cache would have covered — enabling it nets about ${fmtUsdShort(net)}/mo after its higher write premium.`;
+}
+
 export function enrichFindings(events: StoredEvent[], m: Metrics, days: number): EnrichedRec[] {
   const findings = structuredFindings(m);
   if (findings.length === 0) return [];
@@ -298,10 +333,12 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
             .map(({ s, label }) => ({ sessionId: s.sessionId, project: s.project, date: s.date, label }))
         : [];
       const target = targetFor(f.key, sessions);
+      const extended = f.key === 'cold-restarts' ? extendedCacheClause(events, rates, monthly) : '';
       const usd = savingsUsd(f.key, m, rates, sessions, target);
-      const message = target?.personal
-        ? `${f.message} Your own top-quartile sessions already run at ${fmtMetric(f.metric, target.value)} — the target below assumes only that.`
-        : f.message;
+      const message =
+        (target?.personal
+          ? `${f.message} Your own top-quartile sessions already run at ${fmtMetric(f.metric, target.value)} — the target below assumes only that.`
+          : f.message) + extended;
       return {
         ...f,
         message,

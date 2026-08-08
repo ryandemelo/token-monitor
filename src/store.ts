@@ -60,6 +60,11 @@ function migrate(db: DatabaseSync): void {
     ['is_sidechain', 'INTEGER NOT NULL DEFAULT 0'],
     ['parent_session_id', 'TEXT'],
     ['agent_type', 'TEXT'],
+    // Cache writes made against the 1-hour ephemeral cache rather than the
+    // 5-minute default. 0 for old rows and for every source that doesn't
+    // report the split, which is exactly the 5-minute assumption those rows
+    // were already measured under — so no historical metric moves.
+    ['cache_creation_1h_tokens', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   // relabelEvents and syncIntentProjects look rows up one session at a time.
   // Without this every collect ran a full table scan PER SESSION — survivable
@@ -89,8 +94,8 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
       (source, event_key, session_id, project, ts, model,
        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
        tools, has_thinking, is_error, git_branch, activity,
-       is_sidechain, parent_session_id, agent_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       is_sidechain, parent_session_id, agent_type, cache_creation_1h_tokens)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let inserted = 0;
   db.exec('BEGIN');
@@ -102,6 +107,7 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
         JSON.stringify(e.tools), e.hasThinking ? 1 : 0, e.isError ? 1 : 0,
         e.gitBranch ?? null, e.activity ?? 'conversation',
         e.isSidechain ? 1 : 0, e.parentSessionId ?? null, e.agentType ?? null,
+        e.cacheCreation1hTokens ?? 0,
       );
       inserted += Number(res.changes);
     }
@@ -135,6 +141,8 @@ export interface StoredEvent {
   parent_session_id: string | null;
   /** Subagent type label; NULL for main-loop turns. Never leaves the machine. */
   agent_type: string | null;
+  /** Of cache_creation_tokens, how many went to the 1-hour ephemeral cache. */
+  cache_creation_1h_tokens: number;
 }
 
 /**
@@ -357,7 +365,8 @@ export function loadEvents(
   const sql = `SELECT source, session_id, project, ts, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
       tools, has_thinking, is_error, activity,
-      ${col('is_sidechain', '0')}, ${col('parent_session_id', 'NULL')}, ${col('agent_type', 'NULL')}
+      ${col('is_sidechain', '0')}, ${col('parent_session_id', 'NULL')}, ${col('agent_type', 'NULL')},
+      ${col('cache_creation_1h_tokens', '0')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
 }

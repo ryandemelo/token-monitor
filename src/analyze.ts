@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import type { StoredEvent } from './store.js';
-import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, CACHE_TTL_MS } from './metrics.js';
+import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, effectiveCacheTtlOf } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
 import { structuredFindings, fmtMetric } from './followthrough.js';
@@ -50,6 +50,9 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
     const actTokens = Object.fromEntries(ACTIVITIES.map((a) => [a, 0])) as Record<Activity, number>;
     let prev: string | undefined;
     let prevTs: number | undefined;
+    // Same per-session TTL the report's cold-restart ratio uses, so the
+    // session list and the headline number can never disagree.
+    const ttl = effectiveCacheTtlOf(evs.filter((e) => !e.is_sidechain));
     for (const e of evs) {
       spend += e.input_tokens + e.output_tokens;
       cost += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
@@ -59,7 +62,7 @@ export function computeSessionStats(events: StoredEvent[]): SessionStat[] {
       const ts = Date.parse(e.ts);
       // Cold restarts are a main-loop signal on both sides of the ratio (see
       // Metrics.coldRestartShare); a subagent run never idles.
-      if (prevTs !== undefined && !e.is_sidechain && ts - prevTs > CACHE_TTL_MS) {
+      if (prevTs !== undefined && !e.is_sidechain && ts - prevTs > ttl) {
         coldTurns++;
         coldTokens += e.input_tokens + e.cache_creation_tokens;
       }
