@@ -260,7 +260,7 @@ function savingsUsd(
     case 'cold-restarts': {
       // Price against the SAME population the ratio is measured over
       // (main-loop fresh-paid input), or the number is inflated by the whole
-      // fan-out. Pre-0.12 exports have no base and no subagent rows either,
+      // fan-out. Pre-0.13 exports have no base and no subagent rows either,
       // so their own fresh-paid input is the right one.
       const base = m.coldRestartBaseTokens ?? m.inputTokens + m.cacheCreationTokens;
       const saved = Math.max(0, m.coldRestartShare - (target?.value ?? 0)) * base;
