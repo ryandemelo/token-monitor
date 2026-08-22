@@ -42,6 +42,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'abandoned-on-error',
   ]);
 });
 
@@ -111,4 +112,30 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+test('abandoned-on-error: idle+error guard via abandonedSessions, evidence via score', async () => {
+  const { abandonedSessions } = await import('../src/rules/abandoned-on-error.js');
+  const day = (n: number) => `2026-06-${String(n).padStart(2, '0')}T12:00:00.000Z`;
+  const events: StoredEvent[] = [
+    makeStored({ session_id: 'dead', ts: day(1), input_tokens: 50_000 }),
+    makeStored({ session_id: 'dead', ts: day(2), input_tokens: 20_000 }),
+    makeStored({ session_id: 'dead', ts: day(6), input_tokens: 30_000, is_error: 1 }),
+    makeStored({ session_id: 'fresh-err', ts: day(11), input_tokens: 90_000, is_error: 1 }),
+    makeStored({ session_id: 'recovered', ts: day(5), input_tokens: 10_000, is_error: 1 }),
+    makeStored({ session_id: 'recovered', ts: day(6), input_tokens: 10_000 }),
+    makeStored({ session_id: 'sidecar', ts: day(4), input_tokens: 70_000, is_error: 1, is_sidechain: 1 }),
+  ];
+  // window edge is day(11); anchor passed explicitly so the fixture is deterministic
+  const now = Date.parse(day(11));
+  const abandoned = abandonedSessions(events, now);
+  assert.deepEqual(abandoned.map((a) => a.sessionId), ['dead'], 'only the idle failed main-loop session counts');
+  assert.equal(abandoned[0].idleDays, 5);
+
+  const rule = RULE_BY_KEY.get('abandoned-on-error')!;
+  const deadEvents = events.filter((e) => e.session_id === 'dead');
+  const s = { sessionId: 'dead', project: 'proj', date: '2026-06-01', m: computeMetrics(deadEvents), events: deadEvents, isSidechain: false };
+  const scored = rule.score!(s);
+  assert.ok(scored.score > 0);
+  assert.match(scored.label, /last turn errored/);
 });
