@@ -68,6 +68,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'error-cascade',
   ]);
 });
 
@@ -137,4 +138,58 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+test('error-cascade: flags runs of 3+ consecutive failed turns, prices only the excess', () => {
+  const err = (over: Partial<StoredEvent> = {}) => makeStored({ is_error: 1, ...over });
+  const events: StoredEvent[] = [
+    // proj-a, session ca: 3 consecutive errors (300 tok each) then recovery.
+    err({ session_id: 'ca', project: 'proj-a', input_tokens: 200, output_tokens: 100, ts: '2026-06-01T00:00:01.000Z' }),
+    err({ session_id: 'ca', project: 'proj-a', input_tokens: 200, output_tokens: 100, ts: '2026-06-01T00:00:02.000Z' }),
+    err({ session_id: 'ca', project: 'proj-a', input_tokens: 200, output_tokens: 100, ts: '2026-06-01T00:00:03.000Z' }),
+    makeStored({ session_id: 'ca', project: 'proj-a', ts: '2026-06-01T00:00:04.000Z' }),
+    // proj-b, session cb: 4 consecutive errors (100 tok each): excess = turns 3+4.
+    err({ session_id: 'cb', project: 'proj-b', input_tokens: 100, ts: '2026-06-01T00:10:01.000Z' }),
+    err({ session_id: 'cb', project: 'proj-b', input_tokens: 100, ts: '2026-06-01T00:10:02.000Z' }),
+    err({ session_id: 'cb', project: 'proj-b', input_tokens: 100, ts: '2026-06-01T00:10:03.000Z' }),
+    err({ session_id: 'cb', project: 'proj-b', input_tokens: 100, ts: '2026-06-01T00:10:04.000Z' }),
+    // lone failures never cascade, and a success breaks a run in two.
+    err({ session_id: 'ok', project: 'proj-a', ts: '2026-06-01T00:20:01.000Z' }),
+    makeStored({ session_id: 'ok', project: 'proj-a', ts: '2026-06-01T00:20:02.000Z' }),
+    err({ session_id: 'ok', project: 'proj-a', ts: '2026-06-01T00:20:03.000Z' }),
+    err({ session_id: 'ok', project: 'proj-a', ts: '2026-06-01T00:20:04.000Z' }),
+  ];
+  const rule = RULE_BY_KEY.get('error-cascade')!;
+  const m = computeMetrics(events);
+
+  // Two qualifying runs (ca and cb); worst is cb's run of four.
+  assert.equal(m.cascadeRuns, 2);
+  assert.equal(m.longestCascadeRun, 4);
+  assert.ok(Math.abs(m.cascadeShare - 1700 / m.spendTokens) < 1e-9);
+  // Only spend past each run's second turn: 300 (ca) + 400 (cb) = 700.
+  assert.equal(m.cascadeExcessTokens, 700);
+
+  // Gate honesty: fires names real runs, and a clean window never claims one.
+  const fired = rule.fires!(m);
+  assert.match(fired ?? '', /2 error cascade/);
+  assert.match(fired ?? '', /longest stretching to 4/);
+  const clean = computeMetrics(events.filter((e) => e.session_id === 'ok'));
+  assert.equal(clean.cascadeRuns, 0);
+  assert.equal(rule.fires!(clean), undefined);
+
+  // Savings price the excess at the blended spend rate.
+  const rates = { input: 0, cacheRead: 0, spend: 1, premium: 0, cheap: 0, extendedWritePremium: 0, estimated: false };
+  assert.equal(rule.savings!({ m, rates, sessions: [] }), 700);
+
+  // Clause and evidence name where the cascades are.
+  const clause = rule.clause!({ events, rates, monthly: 1 });
+  assert.match(clause, /proj-a\/ca/);
+  assert.match(clause, /proj-b\/cb/);
+  const s = { sessionId: 'cb', project: 'proj-b', date: '2026-06-01', m: computeMetrics(events.filter((e) => e.session_id === 'cb')), events: [], isSidechain: false };
+  const sc = rule.score!(s);
+  assert.equal(sc.score, 800);
+  assert.match(sc.label, /4-turn worst/);
+
+  // It reaches the pipeline like any other finding.
+  assert.ok(structuredFindings(m).some((f) => f.key === 'error-cascade'));
 });
