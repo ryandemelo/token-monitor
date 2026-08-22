@@ -185,6 +185,30 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: --plan compares against a seat, rides into the export, and shows up in merge', () => {
+  const seat = run(['report', '--plan', 'pro', ...DAYS]);
+  assert.equal(seat.code, 0);
+  assert.ok(seat.stdout.includes('Seat value'));
+  assert.ok(seat.stdout.includes('not a quota tracker'));
+
+  const bad = run(['report', '--plan', 'max-50x', ...DAYS]);
+  assert.equal(bad.code, 1);
+  assert.ok(bad.stderr.includes('Unknown plan'));
+
+  // The declared plan is a signed field, so it survives merge --verify.
+  const exported = run(['report', '--json', '--plan', 'team-premium', ...DAYS]).stdout;
+  assert.equal(JSON.parse(exported).plan, 'team-premium');
+  writeFileSync(join(HOME, 'seat.json'), exported);
+  const merged = run(['merge', join(HOME, 'seat.json'), '--verify']);
+  assert.equal(merged.code, 0);
+  assert.ok(merged.stdout.includes('Seat value'));
+  assert.ok(merged.stdout.includes('Team premium seat'));
+
+  // No plan declared: no seat section anywhere.
+  writeFileSync(join(HOME, 'noplan.json'), run(['report', '--json', ...DAYS]).stdout);
+  assert.ok(!run(['merge', join(HOME, 'noplan.json')]).stdout.includes('Seat value'));
+});
+
 test('e2e: donate-fixture writes a synthetic, re-collectable copy of one session', () => {
   const listed = run(['analyze', '--json', ...DAYS]);
   assert.equal(listed.code, 0);

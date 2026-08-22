@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir, userInfo, platform } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { DEFAULT_KEY_DIR } from './sign.js';
+import { findPlan, PLAN_IDS } from './plans.js';
 
 /**
  * Team rollout. A lead hosts one config file; each dev (or their MDM /
@@ -22,6 +23,12 @@ export interface TeamDeployConfig {
   scheduleHours?: number;
   /** Export window passed to report; default 30. */
   windowDays?: number;
+  /**
+   * Default subscription plan for members who do not declare one (plans.ts
+   * ids). Optional: a team on mixed tiers simply omits it, and members can
+   * still pass --plan themselves.
+   */
+  plan?: string;
 }
 
 export function validateTeamConfig(data: unknown): TeamDeployConfig {
@@ -41,6 +48,9 @@ export function validateTeamConfig(data: unknown): TeamDeployConfig {
   }
   if (c.windowDays !== undefined && (typeof c.windowDays !== 'number' || c.windowDays < 1)) {
     throw new Error('team config: windowDays must be >= 1');
+  }
+  if (c.plan !== undefined && !findPlan(String(c.plan))) {
+    throw new Error(`team config: plan must be one of ${PLAN_IDS.join(', ')}`);
   }
   return c;
 }

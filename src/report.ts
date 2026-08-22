@@ -21,6 +21,8 @@ import { fmtTokens } from './fmt.js';
 import type { Rule } from './rules/index.js';
 import { RULES, RULE_BY_KEY } from './rules/index.js';
 import type { ToolSurface } from './tool-surface.js';
+import type { Plan } from './plans.js';
+import { findPlan, seatComparison, fmtSeatComparison, SEAT_CAVEAT } from './plans.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -115,7 +117,7 @@ const STATUS_LABEL: Record<FollowRow['status'], string> = {
 
 export function renderReport(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary; relay?: RelaySummary },
+  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary; relay?: RelaySummary; plan?: Plan; annual?: boolean },
 ): string {
   if (events.length === 0) {
     return 'No events in range. Run `token-monitor collect` first, or widen --days.';
@@ -226,6 +228,14 @@ export function renderReport(
         }),
       ),
     );
+  }
+
+  if (opts.plan) {
+    const seat = seatComparison(m.costUsd, opts.days, opts.plan, { estimated: m.costEstimated, annual: opts.annual });
+    out.push(section('Seat value'));
+    out.push(`  ${BOLD}${fmtSeatComparison(seat)}${RESET}`);
+    if (opts.plan.note) out.push(`  ${DIM}${opts.plan.label}: ${opts.plan.note}.${RESET}`);
+    out.push(`  ${DIM}${SEAT_CAVEAT}${RESET}`);
   }
 
   out.push(`\n${DIM}Cost figures marked ~ use placeholder prices — edit src/pricing.ts.${RESET}\n`);
@@ -702,6 +712,42 @@ export function renderTeamReport(
       if (m.byActivity[a].tokens === 0) continue;
       out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);
     }
+  }
+
+  // Seat value, only for the members who declared a plan. A team on mixed
+  // tiers still gets rows for the ones who did; members without a plan show
+  // "—" rather than being quietly assumed onto the lead's own tier.
+  const declared = exports.filter((e) => e.plan && findPlan(e.plan));
+  if (declared.length > 0) {
+    out.push(section('Seat value (members who declared a plan)'));
+    let seatTotal = 0;
+    let apiTotal = 0;
+    let anyEstimated = false;
+    const rows = declared.map((e) => {
+      const plan = findPlan(e.plan!)!;
+      const c = seatComparison(e.overall.costUsd, e.days, plan, { estimated: e.overall.costEstimated });
+      seatTotal += c.seatMonthlyUsd;
+      apiTotal += c.apiEquivalentMonthlyUsd;
+      anyEstimated ||= c.estimated;
+      return [
+        displayName(e, opts.keyring),
+        plan.label,
+        `$${c.seatMonthlyUsd.toFixed(0)}/mo`,
+        `${c.estimated ? '~' : ''}$${c.apiEquivalentMonthlyUsd.toFixed(0)}/mo`,
+        c.thin ? `${DIM}thin window${RESET}` : `${c.ratio.toFixed(1)}×`,
+      ];
+    });
+    const undeclared = exports.length - declared.length;
+    if (undeclared > 0) {
+      rows.push([`${DIM}${undeclared} member(s) with no declared plan${RESET}`, `${DIM}—${RESET}`, `${DIM}—${RESET}`, `${DIM}—${RESET}`, `${DIM}—${RESET}`]);
+    }
+    out.push(table(['Member', 'Plan', 'Seat', 'API-equivalent', 'Ratio'], rows));
+    const t = anyEstimated ? '~' : '';
+    out.push(
+      `\n  ${BOLD}${t}$${apiTotal.toFixed(0)}/mo of API-equivalent work on $${seatTotal.toFixed(0)}/mo of seats${RESET}` +
+        ` ${DIM}(${seatTotal > 0 ? (apiTotal / seatTotal).toFixed(1) : '0'}× across the declared seats)${RESET}`,
+    );
+    out.push(`  ${DIM}${SEAT_CAVEAT}${RESET}`);
   }
 
   const stale = staleMembers(exports, opts.keyring);

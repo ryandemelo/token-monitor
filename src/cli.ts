@@ -21,6 +21,7 @@ import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
 import { computeToolSurface } from './tool-surface.js';
+import { findPlan, PLAN_IDS } from './plans.js';
 import { buildDonation, writeDonation, resolveSession } from './donate.js';
 import { blendedRates } from './recommendations.js';
 import { renderHtml, renderTeamHtml, renderCategorizeHtml } from './html.js';
@@ -35,7 +36,8 @@ const HELP = `token-monitor — measure how effectively your team spends AI codi
 
 Usage:
   token-monitor collect [--source <name>] [--db <path>]
-  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
+  token-monitor report  [--days <n>] [--trend] [--project <name>] [--source <name>] [--json]
+                        [--plan <name>] [--annual] [--no-categories] [--db <path>]
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor relay   [--days <n>] [--threshold <0-1>] [--source <name>] [--json] [--db <path>]
@@ -117,6 +119,11 @@ Options:
   --by        merge rollup axis: team or discipline (default: discipline)
   --html      write an HTML dashboard to this path (merge: team rollup; categorize: task categories)
   --no-categories  omit task categories from report --json / push exports
+  --plan      compare API-equivalent spend against a subscription seat:
+              ${PLAN_IDS.join(', ')} (add --annual for annual-billing rates).
+              Prices only — this is NOT a quota tracker, and plan limits are
+              not readable from anything local. The name also rides along in
+              exports so a lead's merge can show seat value per member.
   --db        SQLite path (default: ${DEFAULT_DB})
 
 Project families:
@@ -134,10 +141,10 @@ function buildSignedExportJson(
   days: number,
   dbPath?: string,
   filters: { project?: string; source?: string } = {},
-  opts: { noCategories?: boolean } = {},
+  opts: { noCategories?: boolean; plan?: string } = {},
 ): string {
   const events = loadEvents(db, { days, ...filters });
-  const ex = buildExport(events, days);
+  const ex = buildExport(events, days, { plan: opts.plan });
   const persona = assignPersona(ex.overall);
   // Task categories ride along (labels only — see exportCategories) so a
   // lead's merge can cluster tasks across people without members remembering
@@ -249,10 +256,20 @@ async function main() {
       from: { type: 'string' },
       hours: { type: 'string' },
       remove: { type: 'boolean', default: false },
+      plan: { type: 'string' },
+      annual: { type: 'boolean', default: false },
       db: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
+
+  // Resolved once: an unknown plan name is a typo worth failing on, not a
+  // silently-dropped flag that makes a comparison quietly disappear.
+  const plan = values.plan ? findPlan(values.plan) : undefined;
+  if (values.plan && !plan) {
+    console.error(`Unknown plan "${values.plan}". Valid: ${PLAN_IDS.join(', ')}`);
+    process.exit(1);
+  }
 
   const cmd = positionals[0];
   if (values.help || !cmd) {
@@ -368,8 +385,13 @@ Signing fingerprint (send to your team lead for keys.json):
   } else if (cmd === 'push') {
     const config = loadConfig(keyDirFor(values.db) ?? DEFAULT_KEY_DIR);
     const days = Number(values.days) || config.windowDays || 30;
+    // The member's own --plan wins over the team default: a lead's config
+    // says what most people are on, not what this machine is on.
     const where = await pushExport(
-      buildSignedExportJson(db, days, values.db, {}, { noCategories: values['no-categories'] }),
+      buildSignedExportJson(db, days, values.db, {}, {
+        noCategories: values['no-categories'],
+        plan: plan?.id ?? config.plan,
+      }),
       config,
     );
     console.log(`Export (last ${days} days, signed) — ${where}`);
@@ -391,7 +413,7 @@ Signing fingerprint (send to your team lead for keys.json):
     const days = Number(values.days) || 30;
     const filters = { project: values.project, source: values.source };
     if (values.json) {
-      console.log(buildSignedExportJson(db, days, values.db, filters, { noCategories: values['no-categories'] }));
+      console.log(buildSignedExportJson(db, days, values.db, filters, { noCategories: values['no-categories'], plan: plan?.id }));
     } else {
       // With --trend, load both windows in one query and partition, so the
       // current slice and the comparison share the same boundary.
@@ -409,7 +431,7 @@ Signing fingerprint (send to your team lead for keys.json):
       const cat = events.length > 0
         ? categorizeSummary(db, { days, project: values.project, source: values.source })
         : undefined;
-      let out = renderReport(events, { days, follow, categorize: cat, relay: relaySummary(db, { days }) });
+      let out = renderReport(events, { days, follow, categorize: cat, relay: relaySummary(db, { days }), plan, annual: values.annual });
       if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
       console.log(out);
     }
