@@ -18,7 +18,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { loadEvents, recordIntents, loadIntents } from './store.js';
 import type { StoredEvent, IntentRow } from './store.js';
-import { groupByRootSession, parseTools } from './metrics.js';
+import { computeMetrics, groupByRootSession, parseTools } from './metrics.js';
 import { costOf } from './pricing.js';
 import { ADAPTERS } from './adapters/index.js';
 import type { Source } from './types.js';
@@ -28,6 +28,9 @@ import type { ClusterItem } from './cluster.js';
 import type { ExportCategory } from './team.js';
 import type { SkillReport } from './skills.js';
 import { skillReport } from './skills.js';
+import type { RoutingRow } from './routing.js';
+import { computeRouting, sessionFacts } from './routing.js';
+import { blendedRates } from './recommendations.js';
 
 export interface CategoryRow {
   id: string;
@@ -60,6 +63,10 @@ export interface CategorizeResult {
   sessionDates?: Map<string, string[]>;
   /** Skill adoption and ROI (#67); absent until `categorize` computes it. */
   skills?: SkillReport;
+  /** Category name -> its session ids, for the per-category routing comparison (#71). */
+  members?: Map<string, string[]>;
+  /** Per-category premium-vs-cheap routing evidence (#71). */
+  routing?: RoutingRow[];
 }
 
 interface SessionAgg {
@@ -174,6 +181,14 @@ export function runCategorize(
   const frozen = loadIntents(db, aggs.map((a) => a.sessionId));
   const result = buildResult(aggs, frozen, days, opts);
   result.skills = skillReport(db, result.categories, result.sessionDates!, { days });
+  // Routing needs per-session model mix and outcomes, so it runs off the same
+  // events the categories were built from rather than a second query.
+  result.routing = computeRouting(
+    result.members!,
+    sessionFacts(events),
+    blendedRates(computeMetrics(events)),
+    days,
+  );
   return result;
 }
 
@@ -227,12 +242,18 @@ function buildResult(
   const sessionDates = new Map<string, string[]>(
     clusters.map((c) => [c.id, c.items.map((it) => aggById.get(it.id)?.date ?? '').filter(Boolean)]),
   );
+  // Keyed by NAME for routing (which reports names) and by id for skill ROI
+  // (which joins on the cluster id) — the two consumers want different keys.
+  const members = new Map<string, string[]>(
+    clusters.map((c) => [categories.find((cat) => cat.id === c.id)?.name ?? c.name, c.items.map((it) => it.id)]),
+  );
 
   return {
     days,
     totalSessions: aggs.length,
     textSessions,
     sessionDates,
+    members,
     categories: [...categories].sort(byCostThenSessions),
     duplicates: categories.filter((c) => c.duplicate).sort((a, b) => b.cost - a.cost || byCostThenSessions(a, b)),
     skillCandidates: categories.filter((c) => c.hasText && c.sessions >= minCluster).sort(byCostThenSessions),

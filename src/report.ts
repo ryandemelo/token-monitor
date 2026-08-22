@@ -15,6 +15,8 @@ import type { SourceCoverage } from './coverage.js';
 import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote, trendIsComparable } from './coverage.js';
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { ROI_MIN_BEFORE_SESSIONS } from './skills.js';
+import type { RoutingRow } from './routing.js';
+import { MIN_CATEGORY_SESSIONS, MIN_PER_SIDE, NOISE_BAND, ROUTING_CAVEAT } from './routing.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
 import type { RelayResult, RelaySummary } from './relay-scan.js';
@@ -392,12 +394,60 @@ export function renderCategorize(r: CategorizeResult, days: number): string {
     );
   }
 
+  out.push(...renderRouting(r.routing ?? []));
   out.push(...renderSkillAdoption(r));
 
   out.push(
     `\n  ${DIM}Labels are derived on-device from redacted prompts; raw prompt text is never stored.${RESET}\n`,
   );
   return out.join('\n');
+}
+
+const ROUTING_VERDICT: Record<RoutingRow['verdict'], string> = {
+  'no-measurable-gap': '≈ no measurable gap',
+  'premium-better': '↑ premium did better',
+  'cheap-worse-unclear': '— unclear',
+};
+
+/**
+ * Per-category routing evidence: where a recurring task ran on both tiers and
+ * the cheaper one showed no measurably worse outcome. Empty for most people,
+ * on purpose — the gates are strict because the row is an argument about
+ * someone's judgement.
+ */
+export function renderRouting(rows: RoutingRow[]): string[] {
+  const out: string[] = [];
+  if (rows.length === 0) return out;
+  out.push(section('Routing by task (categories that ran on both tiers)'));
+  out.push(
+    table(
+      ['Category', 'Sessions', 'Premium', 'Cheap', 'Δ rework', 'Δ errors', 'Premium $', 'Verdict', 'If routed down'],
+      rows.slice(0, 10).map((r) => [
+        (r.projectScoped ? '◦ ' : '') + (r.category.length > 22 ? r.category.slice(0, 21) + '…' : r.category),
+        String(r.sessions),
+        String(r.premiumSessions),
+        String(r.cheapSessions),
+        (r.reworkDelta >= 0 ? '+' : '−') + Math.abs(r.reworkDelta * 100).toFixed(0) + 'pp',
+        (r.errorDelta >= 0 ? '+' : '−') + Math.abs(r.errorDelta * 100).toFixed(0) + 'pp',
+        '$' + r.premiumCostUsd.toFixed(2),
+        ROUTING_VERDICT[r.verdict],
+        r.savingsUsdPerMonth ? `${GREEN}~$${r.savingsUsdPerMonth.toFixed(0)}/mo${RESET}` : `${DIM}—${RESET}`,
+      ]),
+    ),
+  );
+  out.push(
+    `\n  ${DIM}Δ is the cheap side minus the premium side, in percentage points: positive means the cheaper tier did worse. Gates: ≥${MIN_CATEGORY_SESSIONS} sessions in the category and ≥${MIN_PER_SIDE} on each tier, and differences within ±${(NOISE_BAND * 100).toFixed(0)}pp count as no gap.${RESET}`,
+  );
+  if (rows.some((r) => r.projectScoped)) {
+    out.push(
+      `  ${DIM}◦ marks a comparison confined to the one project where both tiers were actually used — comparing across projects would compare the projects, not the tiers.${RESET}`,
+    );
+  }
+  out.push(`  ${DIM}${ROUTING_CAVEAT}${RESET}`);
+  out.push(
+    `  ${DIM}The "if routed down" figure overlaps the premium-misroute and premium-model-overuse findings; it is shown here as per-category evidence and is deliberately NOT added to the report's headline potential.${RESET}`,
+  );
+  return out;
 }
 
 const ROI_STATUS: Record<string, string> = {
