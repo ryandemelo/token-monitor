@@ -7,6 +7,9 @@
  * importing the renderer that renders them.
  */
 export function fmtTokens(n: number): string {
+  // Billions show up for real once carried context is counted: a heavy
+  // fortnight runs to thousands of millions, and "3250.1M" is unreadable.
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return String(n);

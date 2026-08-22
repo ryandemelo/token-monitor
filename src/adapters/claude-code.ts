@@ -103,10 +103,38 @@ interface TranscriptOpts {
   sidechain?: { agentId: string; parentSessionId: string };
 }
 
+/**
+ * Size of one tool result as the model sees it, in characters. Blocks that
+ * carry text are measured by their text; anything else falls back to its
+ * serialized length, which is the right order of magnitude for a structured
+ * payload. Only the NUMBER is kept — the content is never stored, hashed or
+ * printed.
+ */
+function resultChars(content: unknown): number {
+  if (typeof content === 'string') return content.length;
+  if (Array.isArray(content)) {
+    return content.reduce((n: number, b) => {
+      if (typeof b?.text === 'string') return n + b.text.length;
+      try {
+        return n + JSON.stringify(b).length;
+      } catch {
+        return n;
+      }
+    }, 0);
+  }
+  if (content === undefined || content === null) return 0;
+  try {
+    return JSON.stringify(content).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Parse one JSONL transcript (main-loop or subagent) into usage turns. */
 function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
-  // tool_use id -> event, so a failed tool_result can flag its turn
-  const byToolUseId = new Map<string, UsageEvent>();
+  // tool_use id -> the turn that called it and the tool's name, so a
+  // tool_result can flag the turn as failed and bill its size to the tool.
+  const byToolUseId = new Map<string, { ev: UsageEvent; name: string }>();
   // The most recent genuine user prompt, carried forward onto the assistant
   // turns it triggered (transient — used only by `categorize`).
   let lastUserText = '';
@@ -123,14 +151,14 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
       const content = d.message?.content;
       if (Array.isArray(content)) {
         for (const block of content) {
-          if (
-            block.type === 'tool_result' &&
-            block.is_error &&
-            block.tool_use_id &&
-            !isDeclination(block.content)
-          ) {
-            const ev = byToolUseId.get(block.tool_use_id);
-            if (ev) ev.isError = true;
+          if (block.type !== 'tool_result' || !block.tool_use_id) continue;
+          const call = byToolUseId.get(block.tool_use_id);
+          if (!call) continue;
+          if (block.is_error && !isDeclination(block.content)) call.ev.isError = true;
+          const chars = resultChars(block.content);
+          if (chars > 0) {
+            const sizes = (call.ev.toolResultChars ??= {});
+            sizes[call.name] = (sizes[call.name] ?? 0) + chars;
           }
         }
       }
@@ -147,7 +175,7 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
     const commands: string[] = [];
     const responseParts: string[] = [];
     let hasThinking = false;
-    const toolUseIds: string[] = [];
+    const toolUseIds: Array<{ id: string; name: string }> = [];
     const blocks = Array.isArray(d.message.content) ? d.message.content : [];
     for (const block of blocks) {
       if (block.type === 'text' && typeof block.text === 'string') {
@@ -155,7 +183,7 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
       }
       if (block.type === 'tool_use' && block.name) {
         tools.push(block.name);
-        if (block.id) toolUseIds.push(block.id);
+        if (block.id) toolUseIds.push({ id: block.id, name: block.name });
         if (typeof block.input?.command === 'string') commands.push(block.input.command);
       } else if (block.type === 'thinking') {
         hasThinking = true;
@@ -205,7 +233,7 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
     }
     ev.activity = classify(ev);
     turns.push({ ev, cwd: d.cwd });
-    for (const id of toolUseIds) byToolUseId.set(id, ev);
+    for (const { id, name } of toolUseIds) byToolUseId.set(id, { ev, name });
   }
   return turns;
 }

@@ -6,7 +6,7 @@ import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
 } from './store.js';
-import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay, renderRules, renderRule, lookupRule } from './report.js';
+import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay, renderRules, renderRule, lookupRule, renderContext } from './report.js';
 import { runRelayScan, relaySummary } from './relay-scan.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
@@ -19,6 +19,8 @@ import { RULES } from './rules/index.js';
 import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
+import { computeToolSurface } from './tool-surface.js';
+import { blendedRates } from './recommendations.js';
 import { renderHtml, renderTeamHtml, renderCategorizeHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, buildLlmTrackPrompt, runLlm, runLlmCapture, parseLlmFindings, renderTrackedLlm, detectAgent } from './analyze.js';
 import { signObject, verifyObject, ensureKeypair, fingerprint, loadKeyring, checkKeyring, keyDirFor, DEFAULT_KEY_DIR } from './sign.js';
@@ -35,6 +37,7 @@ Usage:
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor relay   [--days <n>] [--threshold <0-1>] [--source <name>] [--json] [--db <path>]
+  token-monitor context [--days <n>] [--json] [--db <path>]
   token-monitor rules   [<rule-key>] [--days <n>] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
@@ -61,6 +64,10 @@ Commands:
             hand-carried between sessions instead of handed over. Offline and
             on-device: comparison runs on hashed 8-word shingles, and prompt
             and response text is never stored, printed, or sent
+  context   What the standing context surface costs: the session floor every
+            turn re-reads, the tool results still riding along in it, per-MCP-
+            server spend, and connected servers nothing ever invoked. Server
+            and tool names are shown locally and never leave the machine.
   rules     List the waste rules that produce findings — what each measures,
             which fire on your current window, and where its file lives. With a
             rule key, print that rule's documentation. Each rule is one file in
@@ -488,6 +495,32 @@ Signing fingerprint (send to your team lead for keys.json):
     const { rows, breach } = await reconcile(provider, events, days);
     console.log(renderReconcile(provider, rows, days));
     if (breach) process.exit(1);
+  } else if (cmd === 'context') {
+    const days = Number(values.days) || 30;
+    const events = loadEvents(db, { days, project: values.project, source: values.source });
+    if (events.length === 0) {
+      console.log('No events in range. Run `token-monitor collect` first, or widen --days.');
+      process.exit(0);
+    }
+    const m = computeMetrics(events);
+    const surface = computeToolSurface(events, { rates: blendedRates(m) });
+    if (values.json) {
+      // Local command, local output: this is the one surface where server and
+      // tool names are allowed, and it is never signed, pushed or merged.
+      console.log(JSON.stringify({
+        windowDays: days,
+        sessionFloorTokens: m.sessionFloorTokens,
+        floorSessions: m.floorSessions,
+        floorShare: m.floorShare,
+        toolResultCarryTokens: m.toolResultCarryTokens,
+        toolResultCarryShare: m.toolResultCarryShare,
+        toolResultTurns: m.toolResultTurns,
+        estimated: true,
+        ...surface,
+      }, null, 2));
+    } else {
+      console.log(renderContext(m, surface, days));
+    }
   } else if (cmd === 'rules') {
     const days = Number(values.days) || 30;
     // Firing state is a convenience, not a requirement: the catalogue must

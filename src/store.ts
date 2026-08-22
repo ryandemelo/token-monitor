@@ -66,6 +66,11 @@ function migrate(db: DatabaseSync): void {
     // report the split, which is exactly the 5-minute assumption those rows
     // were already measured under — so no historical metric moves.
     ['cache_creation_1h_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+    // Characters each tool returned on this turn, as a JSON {tool: chars}
+    // object — SIZES ONLY, structurally incapable of holding result text.
+    // NULL on old rows and on every source that doesn't persist tool results,
+    // which is what makes "unmeasured" distinguishable from "returned nothing".
+    ['tool_result_chars', 'TEXT'],
   ];
   // relabelEvents and syncIntentProjects look rows up one session at a time.
   // Without this every collect ran a full table scan PER SESSION — survivable
@@ -95,8 +100,9 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
       (source, event_key, session_id, project, ts, model,
        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
        tools, has_thinking, is_error, git_branch, activity,
-       is_sidechain, parent_session_id, agent_type, cache_creation_1h_tokens)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       is_sidechain, parent_session_id, agent_type, cache_creation_1h_tokens,
+       tool_result_chars)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let inserted = 0;
   db.exec('BEGIN');
@@ -109,6 +115,7 @@ export function insertEvents(db: DatabaseSync, events: UsageEvent[]): number {
         e.gitBranch ?? null, e.activity ?? 'conversation',
         e.isSidechain ? 1 : 0, e.parentSessionId ?? null, e.agentType ?? null,
         e.cacheCreation1hTokens ?? 0,
+        e.toolResultChars ? JSON.stringify(e.toolResultChars) : null,
       );
       inserted += Number(res.changes);
     }
@@ -144,6 +151,11 @@ export interface StoredEvent {
   agent_type: string | null;
   /** Of cache_creation_tokens, how many went to the 1-hour ephemeral cache. */
   cache_creation_1h_tokens: number;
+  /**
+   * JSON `{tool: chars}` of what each tool RETURNED on this turn, or NULL when
+   * the source doesn't persist results. Sizes only — see the migration note.
+   */
+  tool_result_chars: string | null;
 }
 
 /**
@@ -399,7 +411,7 @@ export function loadEvents(
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
       tools, has_thinking, is_error, activity,
       ${col('is_sidechain', '0')}, ${col('parent_session_id', 'NULL')}, ${col('agent_type', 'NULL')},
-      ${col('cache_creation_1h_tokens', '0')}
+      ${col('cache_creation_1h_tokens', '0')}, ${col('tool_result_chars', 'NULL')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
 }

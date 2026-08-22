@@ -204,6 +204,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     retryTokens: 0, retryShare: 0,
     subagentSessions: 0, subagentSpendTokens: 0, subagentShare: 0,
     extendedCacheTokens: 0, extendedCacheShare: 0, extendedCacheSessions: 0,
+    toolResultTokens: 0, toolResultTurns: 0,
+    toolResultCarryTokens: 0, toolResultCarryShare: 0,
+    sessionFloorTokens: 0, floorSessions: 0, floorTurns: 0, floorBaseTokens: 0, floorShare: 0,
   };
   for (const m of list) {
     out.events += m.events;
@@ -233,6 +236,17 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.subagentSpendTokens += m.subagentSpendTokens ?? 0;
     out.extendedCacheTokens += m.extendedCacheTokens ?? 0;
     out.extendedCacheSessions += m.extendedCacheSessions ?? 0;
+    out.toolResultTokens += m.toolResultTokens ?? 0;
+    out.toolResultTurns += m.toolResultTurns ?? 0;
+    out.toolResultCarryTokens += m.toolResultCarryTokens ?? 0;
+    out.floorSessions += m.floorSessions ?? 0;
+    out.floorTurns += m.floorTurns ?? 0;
+    out.floorBaseTokens += m.floorBaseTokens ?? 0;
+    // Medians don't add. The composable pieces are the numerator (this
+    // member's floor charged over their own turns) and the denominator, which
+    // is why both are carried; the merged "floor" below is therefore a
+    // turn-weighted mean of member medians, not a team median.
+    out.sessionFloorTokens += (m.sessionFloorTokens ?? 0) * (m.floorTurns ?? 0);
     for (const a of ACTIVITIES) {
       byActivity[a].tokens += m.byActivity[a]?.tokens ?? 0;
       byActivity[a].events += m.byActivity[a]?.events ?? 0;
@@ -258,6 +272,12 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   // Pre-0.13 exports carry no subagent fields at all, so a team share is a
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;
+  out.toolResultCarryShare = denom ? out.toolResultCarryTokens / denom : 0;
+  // Finish the turn-weighted mean started in the loop, then recombine the
+  // share from the summed numerator/denominator rather than from the mean.
+  const floorNumerator = out.sessionFloorTokens;
+  out.sessionFloorTokens = out.floorTurns ? floorNumerator / out.floorTurns : 0;
+  out.floorShare = out.floorBaseTokens ? floorNumerator / out.floorBaseTokens : 0;
   out.extendedCacheShare = out.cacheCreationTokens
     ? out.extendedCacheTokens / out.cacheCreationTokens
     : 0;
