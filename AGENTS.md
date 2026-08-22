@@ -20,6 +20,8 @@ token-monitor collect && token-monitor report
 
 After installing, run `collect` then `report` and walk the user through their activity breakdown, cache hit ratio, rework ratio, and persona. `token-monitor context` adds what the standing surface costs — the session floor, tool-result carry, per-MCP-server spend, and connected servers nothing invokes. Tool and server names in that output are local-only: don't paste them anywhere they'd leave the user's machine.
 
+If the user is in Claude Code, mention the plugin: `/plugin marketplace add ryandemelo/token-monitor` then `/plugin install token-monitor` — it adds `/token-report`, `/token-context`, `/token-rules` and a skill covering the whole workflow.
+
 If the user works in a VS Code-family IDE (VS Code, Cursor, Windsurf, Antigravity), mention the extension: `.vsix` attached to the latest GitHub release, installed via "Extensions: Install from VSIX…" — status-bar token/cost plus the dashboard in a webview.
 
 ## Working on the codebase
@@ -30,4 +32,5 @@ If the user works in a VS Code-family IDE (VS Code, Cursor, Windsurf, Antigravit
 - New adapters: follow CONTRIBUTING.md — `src/adapters/<name>.ts` with the log root as a parameter, fixtures under `test/fixtures/<name>/`, registered in `src/adapters/index.ts`.
 - New findings ("waste rules"): one file in `src/rules/` exporting a default `Rule` (contract in `src/rules/types.ts`), listed in `src/rules/index.ts`, with a test. `fires()` gets metrics only — it is called on merged team metrics too. `token-monitor rules` prints the catalogue.
 - Workflow: feature branches (`feat/...`, `fix/...`, `chore/...`) → PR → merge to `main`. Releases are tagged `vX.Y.Z`.
+- The Claude Code plugin (`.claude-plugin/`, `commands/`, `skills/`, `hooks/`) is markdown + JSON over the CLI: no parsing logic there, and `plugin.json`'s version tracks `package.json` (asserted in `test/plugin.test.ts`).
 - Never commit user-specific agent context (`.claude/`, `CLAUDE.md`, `.gemini/`) or generated reports/exports (`report.html`, `exports/`) — these are gitignored; keep them that way.

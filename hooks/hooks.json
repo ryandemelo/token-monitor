@@ -1,0 +1,16 @@
+{
+  "description": "Opt-in session hint: names the waste rules currently firing on your own data. Silent unless you turn it on.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-hint.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

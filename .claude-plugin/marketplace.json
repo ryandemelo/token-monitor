@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "token-monitor",
+  "description": "token-monitor — measure what your coding-agent tokens actually buy, locally and with zero setup.",
+  "owner": {
+    "name": "Ryan de Melo",
+    "url": "https://github.com/ryandemelo"
+  },
+  "plugins": [
+    {
+      "name": "token-monitor",
+      "description": "Analyze your local agent session logs: where tokens go, what they cost, and what to change. No API keys, no server, no telemetry.",
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/ryandemelo/token-monitor"
+    }
+  ]
+}

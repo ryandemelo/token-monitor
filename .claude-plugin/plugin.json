@@ -1,0 +1,13 @@
+{
+  "name": "token-monitor",
+  "version": "0.13.0",
+  "description": "Measure how effectively you spend AI coding-agent tokens: activity breakdown, cache/rework/context-surface signals, and priced recommendations — locally, from the session logs your agents already write.",
+  "author": {
+    "name": "Ryan de Melo",
+    "url": "https://github.com/ryandemelo"
+  },
+  "homepage": "https://github.com/ryandemelo/token-monitor",
+  "repository": "https://github.com/ryandemelo/token-monitor",
+  "license": "MIT",
+  "keywords": ["tokens", "cost", "usage", "analytics", "productivity"]
+}
