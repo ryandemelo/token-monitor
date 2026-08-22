@@ -86,6 +86,17 @@ Adapters skip gracefully when a tool isn't installed. The Cursor adapter reads o
 
 **Subagent coverage.** Claude Code writes each Task/Agent run to its own transcript under the session directory, and the main transcript never mentions what those runs spent. token-monitor reads them: on the maintainer's own 30-day window that is 24% of spend across 2,027 runs — invisible to every version before 0.13, and to any tool that reads only the top level. The format is vendor-internal and undocumented, so parsing is fail-soft (a reshaped or unreadable agent file costs its own turns, never the collect). Only Claude Code is known to persist this; the other five sources report no sidechain data, so their subagent share reads as absent rather than zero.
 
+## Claude Code plugin
+
+```
+/plugin marketplace add ryandemelo/token-monitor
+/plugin install token-monitor
+```
+
+Adds `/token-report`, `/token-context` and `/token-rules`, plus a skill that teaches the agent the whole workflow — including the rules that matter: quote the numbers the tool produced, keep the `~` on estimates, treat absent as absent rather than zero, and never move tool or MCP-server names off the machine.
+
+An **opt-in** `SessionStart` hook can name the rules currently firing on your own data. It is silent until you turn it on (`touch ~/.token-monitor/session-hint`), never runs a collect, never touches the network, and fails open. The plugin is a thin wrapper over the CLI — the same contract the IDE extension follows.
+
 ## IDE extension
 
 [`extension/`](extension/) ships a VS Code-family extension (works in VS Code, Cursor, Windsurf, Antigravity): status-bar tokens/cost for the current project and the dashboard in a webview, both powered by the CLI. Install **[Token Monitor](https://marketplace.visualstudio.com/items?itemName=ryan653133.token-monitor)** from the VS Code Marketplace (search "token-monitor"), or grab the `.vsix` from the latest release and use *Extensions: Install from VSIX…*
