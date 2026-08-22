@@ -21,6 +21,7 @@ export type MetricKey =
   | 'cacheHitRatio'
   | 'reworkRatio'
   | 'thinkToCodeRatio'
+  | 'testingShare'
   | 'premiumShare'
   | 'contextBloatShare'
   | 'coldRestartShare'
@@ -47,6 +48,7 @@ export const METRIC_DIRECTION: Record<MetricKey, 'up' | 'down'> = {
   cacheHitRatio: 'up',
   reworkRatio: 'down',
   thinkToCodeRatio: 'up',
+  testingShare: 'up',
   premiumShare: 'down',
   contextBloatShare: 'down',
   coldRestartShare: 'down',

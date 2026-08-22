@@ -210,6 +210,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     spendTokens: 0, costUsd: 0, costEstimated: false, costUnpricedTokens: 0,
     cacheHitRatio: 0, reworkTokens: 0, reworkRatio: 0, errorEvents: 0,
     byActivity, byModel, thinkToCodeRatio: 0,
+    testingShare: 0, untestedCodingProjects: 0,
     trendSessions: 0, bloatedSessions: 0, contextBloatShare: 0,
     coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0, coldRestartBaseTokens: 0,
     premiumWasteTokens: 0, premiumWasteShare: 0,
@@ -272,6 +273,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.abandonedStreams += m.abandonedStreams ?? 0;
     out.openStreams += m.openStreams ?? 0;
     out.openTokens += m.openTokens ?? 0;
+    out.untestedCodingProjects += m.untestedCodingProjects ?? 0;
     for (const a of ACTIVITIES) {
       byActivity[a].tokens += m.byActivity[a]?.tokens ?? 0;
       byActivity[a].events += m.byActivity[a]?.events ?? 0;
@@ -285,6 +287,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   for (const a of ACTIVITIES) {
     byActivity[a].share = out.spendTokens ? byActivity[a].tokens / out.spendTokens : 0;
   }
+  out.testingShare = byActivity.testing.share;
   const denom = out.cacheReadTokens + out.inputTokens + out.cacheCreationTokens;
   out.cacheHitRatio = denom ? out.cacheReadTokens / denom : 0;
   out.reworkRatio = out.spendTokens ? out.reworkTokens / out.spendTokens : 0;
