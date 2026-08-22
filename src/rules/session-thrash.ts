@@ -93,7 +93,11 @@ the evidence entirely.
 
 Fires when a project has an overlapping cluster of two or more main-loop
 sessions; every session beyond the first in a cluster adds one median session
-floor to the observed extra cost.`,
+floor to the observed extra cost. That figure is a **ceiling**, like
+abandoned-work's: it prices each extra session as if one shared session would
+otherwise have covered its work, which is precisely what genuinely separate
+workstreams deny. Read it as the most the duplication could cost, not the
+least.`,
   fires: (m) =>
     m.floorShare > 0 && m.sessionFloorTokens > 0
       ? 'Parallel main-loop sessions observed in at least one project — the evidence line names where and what the duplicate floors cost.'
@@ -120,7 +124,7 @@ floor to the observed extra cost.`,
       .slice(0, 3)
       .map((g) => `${g.project} (${g.sessions} concurrent)`)
       .join(', ');
-    return ` ${groups.length} project(s) ran overlapping main-loop sessions: ${names}. Roughly ${fmtTokens(totalExtra)} of duplicated floor across them. Sometimes that is deliberate — a long build here while editing there; when it is not, finishing one thread before opening the next keeps one shared context instead of N.`;
+    return ` ${groups.length} project(s) ran overlapping main-loop sessions: ${names}. Roughly ${fmtTokens(totalExtra)} of duplicated floor across them, priced as a ceiling: each extra session is billed as if one shared session would have covered its work, which separate workstreams may not allow. Sometimes that is deliberate — a long build here while editing there; when it is not, finishing one thread before opening the next keeps one shared context instead of N.`;
   },
 };
 
