@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RULES, RULE_BY_KEY } from '../src/rules/index.js';
 import { computeMetrics } from '../src/metrics.js';
+import type { Metrics } from '../src/metrics.js';
 import { structuredFindings } from '../src/followthrough.js';
+import { mergeMetrics } from '../src/team.js';
 import { enrichFindings, targetFor } from '../src/recommendations.js';
 import { renderRules, renderRule } from '../src/report.js';
 import { makeStored } from './helpers.js';
@@ -68,6 +70,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'search-loop',
   ]);
 });
 
@@ -137,4 +140,103 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+// --- #88: search-loop. Runs of >= SEARCH_LOOP_MIN_RUN (10) consecutive
+// exploration turns per main-loop session; savings price only the excess
+// past the floor. ---------------------------------------------------------
+
+/** One exploration turn on `session` at minute `m`, 2k in / 1k out. */
+function exploreTurn(session: string, m: number, extra: Partial<StoredEvent> = {}): StoredEvent {
+  return makeStored({
+    session_id: session,
+    ts: `2026-06-01T01:${String(m).padStart(2, '0')}:00.000Z`,
+    activity: 'exploration',
+    input_tokens: 2_000,
+    output_tokens: 1_000,
+    ...extra,
+  });
+}
+
+test('search-loop: fires on an unbroken run and prices only the excess past the floor', () => {
+  const events: StoredEvent[] = [];
+  for (let i = 0; i < 14; i++) events.push(exploreTurn('lost', i));
+  // A coding turn after the run ends it; a short second session stays quiet.
+  events.push(makeStored({ session_id: 'lost', ts: '2026-06-01T01:14:00.000Z', input_tokens: 5_000, output_tokens: 4_000 }));
+  for (let i = 20; i < 26; i++) events.push(exploreTurn('focused', i));
+
+  const m = computeMetrics(events);
+  assert.equal(m.searchLoopRuns, 1);
+  assert.equal(m.searchLoopSessions, 1);
+  assert.equal(m.searchLoopTurns, 14);
+  assert.equal(m.searchLoopTokens, 14 * 3_000);
+  assert.equal(m.searchLoopLongestRun, 14);
+  // The first 10 turns of the run are legitimate research; only the last 4
+  // are priced as excess.
+  assert.equal(m.searchLoopExcessTokens, 4 * 3_000);
+
+  const rec = enrichFindings(events, m, 30).find((r) => r.key === 'search-loop');
+  assert.ok(rec, 'search-loop should fire on a 14-turn unbroken explore');
+  assert.match(rec!.message, /1 unbroken exploration run\(s\) of 10\+ read-only turns/);
+  assert.match(rec!.message, /the longest 14 turns straight/);
+  assert.ok((rec.savingsUsdPerMonth ?? 0) > 0, 'excess past the floor is priced');
+  assert.equal(rec.evidence[0]?.label, '14-turn unbroken explore');
+});
+
+test('search-loop: stays quiet on interleaved work, subagent fan-outs, and tool-less sources', () => {
+  const events: StoredEvent[] = [];
+  // Two 6-turn digs separated by a coding turn: research, not a loop.
+  for (let i = 0; i < 6; i++) events.push(exploreTurn('interleaved', i));
+  events.push(makeStored({ session_id: 'interleaved', ts: '2026-06-01T01:06:00.000Z', activity: 'coding' }));
+  for (let i = 7; i < 13; i++) events.push(exploreTurn('interleaved', i));
+  // A pure sidechain burst: long unbroken reading is a subagent's JOB.
+  for (let i = 20; i < 34; i++) {
+    events.push(exploreTurn('fanout', i, { is_sidechain: 1, parent_session_id: 'main' }));
+  }
+  // Tool-less turns classify as conversation/thinking, never exploration:
+  // sources without the signal report nothing rather than a false zero.
+  for (let i = 40; i < 54; i++) {
+    events.push(makeStored({ session_id: 'toolless', ts: `2026-06-01T02:${String(i - 40).padStart(2, '0')}:00.000Z`, activity: 'conversation' }));
+  }
+
+  const m = computeMetrics(events);
+  assert.equal(m.searchLoopRuns, 0);
+  assert.equal(m.searchLoopSessions, 0);
+  assert.equal(structuredFindings(m).some((f) => f.key === 'search-loop'), false);
+
+  // But a main loop that runs 12 straight exploration turns next to those
+  // same sidechains still fires: the exclusion is about WHO loops, not where
+  // the session happens to sit.
+  for (let i = 45; i < 57; i++) events.push(exploreTurn('real-loop', i));
+  const m2 = computeMetrics(events);
+  assert.equal(m2.searchLoopRuns, 1);
+  assert.ok(structuredFindings(m2).some((f) => f.key === 'search-loop'));
+});
+
+test('mergeMetrics recombines search-loop counts over pooled spend, legacy exports included', () => {
+  const looper = computeMetrics(
+    Array.from({ length: 13 }, (_, i) => exploreTurn('looper', i)),
+  );
+  const calm = computeMetrics([
+    makeStored({ session_id: 'calm', input_tokens: 1_000, output_tokens: 500 }),
+  ]);
+  const merged = mergeMetrics([looper, calm]);
+  assert.equal(merged.searchLoopRuns, 1);
+  assert.equal(merged.searchLoopTokens, 13 * 3_000);
+  assert.equal(merged.searchLoopExcessTokens, 3 * 3_000);
+  assert.equal(merged.searchLoopLongestRun, Math.max(looper.searchLoopLongestRun, calm.searchLoopLongestRun));
+  assert.equal(merged.searchLoopShare, (13 * 3_000) / (13 * 3_000 + 1_500));
+
+  // Pre-search-loop exports carry none of these fields and merge as zeros.
+  const legacy = { ...looper } as Partial<Metrics>;
+  delete legacy.searchLoopRuns;
+  delete legacy.searchLoopSessions;
+  delete legacy.searchLoopTurns;
+  delete legacy.searchLoopTokens;
+  delete legacy.searchLoopShare;
+  delete legacy.searchLoopLongestRun;
+  delete legacy.searchLoopExcessTokens;
+  const withLegacy = mergeMetrics([legacy as Metrics, calm]);
+  assert.equal(withLegacy.searchLoopRuns, 0);
+  assert.equal(withLegacy.searchLoopShare, 0);
 });
