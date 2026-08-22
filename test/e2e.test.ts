@@ -185,6 +185,27 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: categorize reports skill adoption without leaking the skill name', () => {
+  // Its own $HOME: the skill/PR/tool-result fixture is a separate corpus, and
+  // dropping it into the shared one would move every count the other cases assert.
+  const home2 = mkdtempSync(join(tmpdir(), 'tm-skills-home-'));
+  mkdirSync(join(home2, '.claude'), { recursive: true });
+  cpSync(join(FIXTURES, 'claude-results'), join(home2, '.claude', 'projects'), { recursive: true });
+
+  assert.equal(run(['collect', '--source', 'claude-code'], { home: home2 }).code, 0);
+  const cat = run(['categorize', ...DAYS], { home: home2 });
+  assert.equal(cat.code, 0, cat.stderr);
+  assert.ok(cat.stdout.includes('Skill adoption'));
+  assert.ok(cat.stdout.includes('acme-onboarding'), 'the local terminal may name skills');
+  assert.ok(cat.stdout.includes('Turns, not invocations'));
+
+  // ...and nothing that leaves the machine may.
+  const exported = run(['report', '--json', ...DAYS], { home: home2 }).stdout;
+  assert.ok(!exported.includes('acme-onboarding'), 'skill names must never leave the machine');
+  const analyzed = run(['analyze', '--json', ...DAYS], { home: home2 }).stdout;
+  assert.ok(!analyzed.includes('acme-onboarding'));
+});
+
 test('e2e: outcomes reach the report, analyze and exports — without branch names', () => {
   const report = run(['report', ...DAYS]);
   assert.equal(report.code, 0);
