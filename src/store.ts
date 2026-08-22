@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import type { UsageEvent, Source } from './types.js';
+import type { UsageEvent, SessionPrLink, Source } from './types.js';
 import type { RelayFingerprint } from './relay.js';
 
 export const DEFAULT_DB = join(homedir(), '.token-monitor', 'token-monitor.sqlite');
@@ -156,6 +156,14 @@ export interface StoredEvent {
    * the source doesn't persist results. Sizes only — see the migration note.
    */
   tool_result_chars: string | null;
+  /**
+   * The branch the turn happened on, when the source records one. Work streams
+   * (#66) group sessions by project + branch, so "coded Monday, shipped
+   * Wednesday in a new session" is one stream rather than one abandonment.
+   * LOCAL ONLY: branch names name features and clients, so they are never
+   * exported — the same rule tool and MCP server names follow.
+   */
+  git_branch: string | null;
 }
 
 /**
@@ -413,7 +421,7 @@ export function loadEvents(
   const col = (name: string, fallback: string) => (cols.has(name) ? name : `${fallback} AS ${name}`);
   const sql = `SELECT source, session_id, project, ts, model,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens,
-      tools, has_thinking, is_error, activity,
+      tools, has_thinking, is_error, activity, git_branch,
       ${col('is_sidechain', '0')}, ${col('parent_session_id', 'NULL')}, ${col('agent_type', 'NULL')},
       ${col('cache_creation_1h_tokens', '0')}, ${col('tool_result_chars', 'NULL')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
@@ -433,6 +441,52 @@ export function findSessions(db: DatabaseSync, prefix: string): Array<{ session_
          FROM events WHERE session_id LIKE ? GROUP BY session_id ORDER BY last_ts DESC`,
     )
     .all(prefix + '%') as unknown as Array<{ session_id: string; project: string; source: string; turns: number; last_ts: string }>;
+}
+
+/**
+ * Pull requests per session (#66) — a COUNT, never a description. The repo
+ * name and URL are read to de-duplicate the link lines a session writes and
+ * then discarded in the adapter, so the worst this table can leak is that a
+ * session shipped three things.
+ *
+ * Replace-on-conflict rather than first-wins: a session that opens another PR
+ * after the last collect has genuinely shipped more.
+ */
+export function ensureSessionPrTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_prs (
+      source TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      pr_count INTEGER NOT NULL,
+      PRIMARY KEY (source, session_id)
+    );
+  `);
+}
+
+export function recordSessionPrs(db: DatabaseSync, links: SessionPrLink[]): number {
+  if (links.length === 0) return 0;
+  ensureSessionPrTable(db);
+  const stmt = db.prepare(`
+    INSERT INTO session_prs (source, session_id, pr_count) VALUES (?, ?, ?)
+    ON CONFLICT(source, session_id) DO UPDATE SET pr_count = MAX(pr_count, excluded.pr_count)
+  `);
+  let n = 0;
+  db.exec('BEGIN');
+  try {
+    for (const l of links) n += Number(stmt.run(l.source, l.sessionId, l.prCount).changes);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return n;
+}
+
+/** Session ids with at least one linked PR, for the outcome metrics. */
+export function loadPrSessions(db: DatabaseSync): Set<string> {
+  ensureSessionPrTable(db);
+  const rows = db.prepare('SELECT session_id FROM session_prs WHERE pr_count > 0').all() as unknown as Array<{ session_id: string }>;
+  return new Set(rows.map((r) => r.session_id));
 }
 
 /**

@@ -233,6 +233,28 @@ Both context signals appear on the one-line summary in `report` and the dashboar
 
 **Privacy.** Tool and MCP server names are shown by `context` and stay on the machine. They can name a client, an internal system or a private endpoint, so — exactly like subagent type names — they never enter an export, a signed payload, or an `--llm` payload; the LLM payload's tool-error rows are redacted to `mcp:<tool>`. Connected servers are read from the local agent config by **key only**: a server's command, arguments and environment are never parsed or stored.
 
+## Outcomes: what the tokens bought
+
+Every other metric here is denominator-less. Outcomes add the missing half:
+
+```
+outcomes: 34/67 sessions reached a ship signal (51%)  ·  ~$456.32 per shipped session  ·  308.5k tok in 4 idle unshipped stream(s)
+```
+
+- **Shipped share** — a session ships when it has a shipping turn (`git commit`/`push`, `gh pr`, `git merge` — already classified on every source) or a linked pull request. Claude Code records PR links in its transcripts; they are counted per session and de-duplicated, and the repo name and URL are discarded at the adapter.
+- **Cost per shipped session** — the blunt, honest unit economics. No attribution theater.
+- **Unshipped work** — spend in *streams* (a project plus a branch) that wrote code, reached no ship signal, and have since sat idle. `analyze` lists them.
+
+Three guards, because this is the metric most likely to be misread:
+
+1. **Streams, not sessions.** Coding Monday and shipping Wednesday from a new session is one stream that shipped. Sources without branch information fall back to per-session grouping and say so.
+2. **Never work in flight.** A stream touched recently is reported as **open** and excluded from the finding entirely.
+3. **Main loop, coding only.** A subagent run ships through its caller; a stream that never wrote code was never trying to ship.
+
+Research, spikes and learning ship nothing by design and are not waste. The metric answers exactly one question — how much of this window's spend reached a ship signal — and the `abandoned-work` rule fires only on repeated, idle, code-bearing streams.
+
+**Privacy.** Branch names are shown by `analyze` on your machine and never leave it: they name features and clients, the same class as file paths. Exports and `--llm` payloads carry shares and counts only.
+
 ## Seat value (subscription lens)
 
 Every dollar figure here is **API-equivalent** — what the same tokens would have cost at API rates. Most people run coding agents on a seat, where that number answers nothing on its own. `--plan` converts it:

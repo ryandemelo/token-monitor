@@ -100,6 +100,7 @@ test('donated fixture round-trips: same turns, tokens, errors, activities, fan-o
     parent_session_id: e.parentSessionId ?? null, agent_type: e.agentType ?? null,
     cache_creation_1h_tokens: e.cacheCreation1hTokens ?? 0,
     tool_result_chars: e.toolResultChars ? JSON.stringify(e.toolResultChars) : null,
+    git_branch: e.gitBranch ?? null,
   });
 
   const before = computeMetrics(source);

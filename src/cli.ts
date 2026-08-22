@@ -6,6 +6,7 @@ import { ADAPTERS } from './adapters/index.js';
 import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
+  recordSessionPrs, loadPrSessions,
 } from './store.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay, renderRules, renderRule, lookupRule, renderContext } from './report.js';
 import { runRelayScan, relaySummary } from './relay-scan.js';
@@ -144,7 +145,7 @@ function buildSignedExportJson(
   opts: { noCategories?: boolean; plan?: string } = {},
 ): string {
   const events = loadEvents(db, { days, ...filters });
-  const ex = buildExport(events, days, { plan: opts.plan });
+  const ex = buildExport(events, days, { plan: opts.plan, prSessions: loadPrSessions(db) });
   const persona = assignPersona(ex.overall);
   // Task categories ride along (labels only — see exportCategories) so a
   // lead's merge can cluster tasks across people without members remembering
@@ -204,8 +205,11 @@ function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
   // collect — steady state must stay at 0 changes.
   const aliases = loadProjectAliases();
   for (const source of sources) {
-    const { events, result } = ADAPTERS[source]();
+    const { events, result, prLinks } = ADAPTERS[source]();
     result.eventsInserted = insertEvents(db, events);
+    // Shipped-work signal (#66). Counts only — the adapter already discarded
+    // the repo names and URLs these were derived from.
+    if (prLinks?.length) recordSessionPrs(db, prLinks);
     // Collect IS the backfill: converge historical rows of every session this
     // scan still sees onto the family-normalized (and aliased) project.
     const sessions = new Map<string, string>();
@@ -424,14 +428,17 @@ Signing fingerprint (send to your team lead for keys.json):
       // slices can't pollute them.
       const follow =
         !values.project && !values.source && events.length > 0
-          ? syncFindings(db, computeMetrics(events))
+          ? syncFindings(db, computeMetrics(events, { prSessions: loadPrSessions(db) }))
           : undefined;
       // Cross-surface the duplicate-work signal from any prior `categorize` run
       // (read-only over frozen intents; absent until the user has categorized).
       const cat = events.length > 0
         ? categorizeSummary(db, { days, project: values.project, source: values.source })
         : undefined;
-      let out = renderReport(events, { days, follow, categorize: cat, relay: relaySummary(db, { days }), plan, annual: values.annual });
+      let out = renderReport(events, {
+        days, follow, categorize: cat, relay: relaySummary(db, { days }),
+        plan, annual: values.annual, prSessions: loadPrSessions(db),
+      });
       if (values.trend && events.length > 0) out += '\n' + renderTrend(events, previous, days);
       console.log(out);
     }
@@ -473,10 +480,11 @@ Signing fingerprint (send to your team lead for keys.json):
       console.log('No events in range. Run `token-monitor collect` first, or widen --days.');
       process.exit(0);
     }
+    const prSessions = loadPrSessions(db);
     if (values.json) {
-      console.log(JSON.stringify(deepAnalysis(events), null, 2));
+      console.log(JSON.stringify(deepAnalysis(events, { prSessions }), null, 2));
     } else {
-      console.log(renderAnalysis(events, days));
+      console.log(renderAnalysis(events, days, { prSessions }));
     }
     if (values.track) {
       if (values.project || values.source) {
@@ -500,7 +508,7 @@ Signing fingerprint (send to your team lead for keys.json):
         console.error('No trackable interventions parsed from the agent response (expected strict JSON targeting a known metric).');
         process.exit(1);
       }
-      const rows = recordLlmFindings(db, parsed.interventions, computeMetrics(events));
+      const rows = recordLlmFindings(db, parsed.interventions, computeMetrics(events, { prSessions }));
       console.log(renderTrackedLlm(rows, parsed));
       process.exit(0);
     }
@@ -610,9 +618,10 @@ Signing fingerprint (send to your team lead for keys.json):
   } else if (cmd === 'html') {
     const days = Number(values.days) || 30;
     const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);
-    const follow = events.length > 0 ? syncFindings(db, computeMetrics(events)) : undefined;
+    const prSessions = loadPrSessions(db);
+    const follow = events.length > 0 ? syncFindings(db, computeMetrics(events, { prSessions })) : undefined;
     const cat = events.length > 0 ? categorizeSummary(db, { days }) : undefined;
-    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous, categorize: cat, relay: relaySummary(db, { days }) }));
+    writeFileSync(values.out, renderHtml(events, { days, follow, previousEvents: previous, categorize: cat, relay: relaySummary(db, { days }), prSessions }));
     console.log(`Wrote ${values.out} (${events.length} turns, last ${days} days). Open it in a browser.`);
   } else {
     console.error(`Unknown command "${cmd}"\n`);

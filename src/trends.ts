@@ -48,6 +48,13 @@ export function trendRows(now: Metrics, prev: Metrics): TrendRow[] {
     ...(now.floorSessions || prev.floorSessions
       ? [{ label: 'Session floor', prev: prev.sessionFloorTokens ?? 0, now: now.sessionFloorTokens ?? 0, fmt: 'tokens', good: 'down' } as TrendRow]
       : []),
+    // Outcome rows appear once a window has conversations to speak of.
+    ...(now.conversations || prev.conversations
+      ? [
+          { label: 'Shipped sessions', prev: prev.shippedShare ?? 0, now: now.shippedShare ?? 0, fmt: 'pct', good: 'up' } as TrendRow,
+          { label: 'Unshipped (idle) spend', prev: prev.abandonedShare ?? 0, now: now.abandonedShare ?? 0, fmt: 'pct', good: 'down' } as TrendRow,
+        ]
+      : []),
     ...(now.toolResultTurns || prev.toolResultTurns
       ? [{ label: 'Tool-result carry', prev: prev.toolResultCarryShare ?? 0, now: now.toolResultCarryShare ?? 0, fmt: 'pct', good: 'down' } as TrendRow]
       : []),

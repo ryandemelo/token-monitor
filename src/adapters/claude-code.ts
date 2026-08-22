@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
-import type { UsageEvent, CollectResult } from '../types.js';
+import type { UsageEvent, CollectResult, SessionPrLink } from '../types.js';
 import { classify } from '../classify.js';
 import { sessionProjectOf } from '../project-family.js';
 
@@ -27,6 +27,15 @@ export function isDeclination(content: unknown): boolean {
 
 interface ClaudeLine {
   type?: string;
+  /**
+   * `pr-link` lines only: the pull request a session was linked to. Written
+   * repeatedly (thousands of lines across a busy month for a few dozen PRs),
+   * so they are de-duplicated per session on `<repo>#<number>` before being
+   * counted. Undocumented vendor format — every field optional, fail soft.
+   */
+  prNumber?: number;
+  prUrl?: string;
+  prRepository?: string;
   uuid?: string;
   sessionId?: string;
   cwd?: string;
@@ -92,6 +101,9 @@ interface ParsedTurn {
   cwd?: string;
 }
 
+/** Distinct PR keys seen per session id, from `pr-link` lines. */
+type PrKeysBySession = Map<string, Set<string>>;
+
 interface TranscriptOpts {
   /** Session id for lines that omit one — the transcript's own file id. */
   fallbackSessionId: string;
@@ -131,7 +143,7 @@ function resultChars(content: unknown): number {
 }
 
 /** Parse one JSONL transcript (main-loop or subagent) into usage turns. */
-function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
+function parseTranscript(text: string, opts: TranscriptOpts, prKeys?: PrKeysBySession): ParsedTurn[] {
   // tool_use id -> the turn that called it and the tool's name, so a
   // tool_result can flag the turn as failed and bill its size to the tool.
   const byToolUseId = new Map<string, { ev: UsageEvent; name: string }>();
@@ -145,6 +157,19 @@ function parseTranscript(text: string, opts: TranscriptOpts): ParsedTurn[] {
     try {
       d = JSON.parse(line);
     } catch {
+      continue;
+    }
+    if (d.type === 'pr-link') {
+      // Counted per session, keyed on repo+number so the same PR announced a
+      // hundred times is still one shipped thing. The repo name and URL stop
+      // here — nothing downstream stores or prints them.
+      if (prKeys && d.prNumber !== undefined) {
+        const session = d.sessionId ?? opts.fallbackSessionId;
+        const key = `${d.prRepository ?? ''}#${d.prNumber}`;
+        const set = prKeys.get(session) ?? new Set<string>();
+        set.add(key);
+        prKeys.set(session, set);
+      }
       continue;
     }
     if (d.type === 'user') {
@@ -323,11 +348,12 @@ function readText(path: string): string | undefined {
  *   own cwds are the fallback for the case where the parent transcript is
  *   gone (rotated away) but its subagent directory survives.
  */
-export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; result: CollectResult } {
+export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; result: CollectResult; prLinks: SessionPrLink[] } {
   const events: UsageEvent[] = [];
+  const prKeys: PrKeysBySession = new Map();
   let filesScanned = 0;
   if (!existsSync(root)) {
-    return { events, result: { source: 'claude-code', filesScanned: 0, eventsFound: 0, eventsInserted: 0, note: `${root} not found` } };
+    return { events, prLinks: [], result: { source: 'claude-code', filesScanned: 0, eventsFound: 0, eventsInserted: 0, note: `${root} not found` } };
   }
 
   for (const dir of readdirSync(root)) {
@@ -352,7 +378,7 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
       const text = readText(join(dirPath, ent.name));
       if (text === undefined) continue;
       mainTurns.push(
-        ...parseTranscript(text, { fallbackSessionId: ent.name.replace(/\.jsonl$/, '') }),
+        ...parseTranscript(text, { fallbackSessionId: ent.name.replace(/\.jsonl$/, '') }, prKeys),
       );
     }
     const projectBySession = projectsBySession(mainTurns);
@@ -390,6 +416,11 @@ export function collectClaudeCode(root: string = ROOT): { events: UsageEvent[]; 
   }
   return {
     events,
+    prLinks: [...prKeys].map(([sessionId, keys]) => ({
+      source: 'claude-code' as const,
+      sessionId,
+      prCount: keys.size,
+    })),
     result: { source: 'claude-code', filesScanned, eventsFound: events.length, eventsInserted: 0 },
   };
 }

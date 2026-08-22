@@ -5,7 +5,7 @@ import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
-import { fmtTokens, fmtSubagents, fmtCacheTtl, fmtContextSurface, fmtRelaySummary } from './report.js';
+import { fmtTokens, fmtSubagents, fmtCacheTtl, fmtContextSurface, fmtOutcomes, fmtRelaySummary } from './report.js';
 import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote } from './coverage.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
 import { mergeMetrics, rollupExports, displayName } from './team.js';
@@ -49,9 +49,12 @@ function stackedBar(m: Metrics): string {
 
 export function renderHtml(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[]; previousEvents?: StoredEvent[]; categorize?: CategorizeSummary; relay?: RelaySummary },
+  opts: {
+    days: number; follow?: FollowRow[]; previousEvents?: StoredEvent[];
+    categorize?: CategorizeSummary; relay?: RelaySummary; prSessions?: Set<string>;
+  },
 ): string {
-  const m = computeMetrics(events);
+  const m = computeMetrics(events, { prSessions: opts.prSessions });
   const persona = assignPersona(m);
   const enriched = enrichFindings(events, m, opts.days);
   const recItems = [
@@ -155,6 +158,7 @@ ${coverageNote ? `<p class="dup">⚠ ${esc(coverageNote)}</p>` : ''}
 <p class="muted">rework ${pct(m.reworkRatio)} · think:code ${m.thinkToCodeRatio.toFixed(2)} · ${m.errorEvents} turns hit tool errors</p>
 <p class="muted">signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions · cold restarts ${pct(m.coldRestartShare)} of main-loop fresh input · premium on exploration/chat ${pct(m.premiumWasteShare)} · retry loops ${pct(m.retryShare)}${esc(fmtSubagents(m))}${esc(fmtCacheTtl(m))}</p>
 ${fmtContextSurface(m) ? `<p class="muted">${esc(fmtContextSurface(m))} — run <code>token-monitor context</code> for the per-tool and per-server breakdown</p>` : ''}
+${fmtOutcomes(m) ? `<p class="muted">${esc(fmtOutcomes(m))}</p>` : ''}
 ${opts.relay ? `<p class="dup">📋 ${esc(fmtRelaySummary(opts.relay))} <span class="muted">— run <code>relay</code> for detail</span></p>` : ''}
 ${opts.categorize ? `<p class="dup">🔁 ${esc(fmtCategorizeSummary(opts.categorize))} <span class="muted">— run <code>categorize</code> for detail</span></p>` : ''}
 

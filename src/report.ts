@@ -78,6 +78,32 @@ export function fmtContextSurface(m: Metrics): string {
   return parts.join('  ·  ');
 }
 
+/**
+ * The outcomes line: what the window's tokens bought. Deliberately three
+ * plain facts rather than a verdict — a research week that ships nothing is
+ * not waste, and the metric only ever answers "how much of this window's
+ * spend reached a ship signal".
+ *
+ * Silent on a window with no conversations to speak of, and the abandoned
+ * clause is silent when nothing has been idle long enough to say.
+ */
+export function fmtOutcomes(m: Metrics): string {
+  if (!m.conversations) return '';
+  const parts = [
+    `outcomes: ${m.shippedSessions}/${m.conversations} sessions reached a ship signal (${(m.shippedShare * 100).toFixed(0)}%)`,
+  ];
+  if (m.shippedSessions > 0) {
+    parts.push(`~$${m.costPerShippedSession.toFixed(2)} per shipped session`);
+  }
+  if (m.abandonedStreams > 0) {
+    parts.push(`${fmtTokens(m.abandonedTokens)} tok in ${m.abandonedStreams} idle unshipped stream(s)`);
+  }
+  if (m.openStreams > 0) {
+    parts.push(`${m.openStreams} still open`);
+  }
+  return parts.join('  ·  ');
+}
+
 export function fmtSubagents(m: Metrics): string {
   if (!m.subagentSessions) return '';
   const runs = m.subagentSessions === 1 ? '1 run' : `${m.subagentSessions} runs`;
@@ -117,12 +143,15 @@ const STATUS_LABEL: Record<FollowRow['status'], string> = {
 
 export function renderReport(
   events: StoredEvent[],
-  opts: { days: number; follow?: FollowRow[]; categorize?: CategorizeSummary; relay?: RelaySummary; plan?: Plan; annual?: boolean },
+  opts: {
+    days: number; follow?: FollowRow[]; categorize?: CategorizeSummary; relay?: RelaySummary;
+    plan?: Plan; annual?: boolean; prSessions?: Set<string>;
+  },
 ): string {
   if (events.length === 0) {
     return 'No events in range. Run `token-monitor collect` first, or widen --days.';
   }
-  const m = computeMetrics(events);
+  const m = computeMetrics(events, { prSessions: opts.prSessions });
   const out: string[] = [];
 
   out.push(section(`Token Monitor — last ${opts.days} days`));
@@ -163,6 +192,8 @@ export function renderReport(
   );
   const ctx = fmtContextSurface(m);
   if (ctx) out.push(`  ${DIM}${ctx}  ${RESET}${DIM}— run \`context\` for detail${RESET}`);
+  const outcomes = fmtOutcomes(m);
+  if (outcomes) out.push(`  ${DIM}${outcomes}${RESET}`);
   if (opts.categorize) {
     out.push(
       `  ${YELLOW}🔁 ${fmtCategorizeSummary(opts.categorize)}${RESET} ${DIM}— run \`categorize\` for detail${RESET}`,

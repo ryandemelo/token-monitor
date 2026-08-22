@@ -279,6 +279,8 @@ function unitValuePerPoint(metric: MetricKey, m: Metrics, rates: BlendedRates): 
       return inputSide * rates.cacheRead;
     case 'floorShare':
       return (m.floorBaseTokens ?? 0) * rates.cacheRead;
+    case 'abandonedShare':
+      return m.spendTokens * rates.spend;
     default:
       return undefined; // thinkToCodeRatio, contextBloatShare: not $-translatable
   }

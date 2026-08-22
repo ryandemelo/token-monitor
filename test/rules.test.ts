@@ -41,6 +41,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-retry-loops',
     'tool-result-bloat',
     'context-floor-creep',
+    'abandoned-work',
   ]);
 });
 

@@ -91,6 +91,19 @@ export interface UsageEvent {
   intentText?: string;
 }
 
+/**
+ * A pull request one session opened. Counted, never described: `prUrl` and
+ * `prRepository` are read to de-duplicate the repeated link lines a session
+ * writes, and then discarded — a repo name is the same sensitivity class as a
+ * file path, and this feature only ever needs "how many".
+ */
+export interface SessionPrLink {
+  source: Source;
+  sessionId: string;
+  /** Distinct pull requests this session was linked to. */
+  prCount: number;
+}
+
 export interface CollectResult {
   source: Source;
   filesScanned: number;

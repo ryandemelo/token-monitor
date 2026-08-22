@@ -76,7 +76,7 @@ export interface ClauseArgs {
  * so `potentialBill` takes the max within a family and sums across families.
  * A rule with no family contributes evidence and advice but no headline $.
  */
-export type RuleFamily = 'caching' | 'routing' | 'rework';
+export type RuleFamily = 'caching' | 'routing' | 'rework' | 'outcomes';
 
 export interface Rule {
   /** Stable id. Follow-through baselines key on it — never rename a shipped key. */
