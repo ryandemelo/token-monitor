@@ -370,6 +370,7 @@ token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>]
 token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor context [--days 30] [--json] [--db <path>]
+token-monitor donate-fixture <session-id-or-prefix> [--out <dir>] [--db <path>]
 token-monitor rules   [<rule-key>] [--days 30] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--threshold 0.4] [--min-cluster 2] [--json] [--html team.html]
@@ -380,7 +381,7 @@ token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
 
 Two ways in, both documented in [CONTRIBUTING.md](CONTRIBUTING.md):
 
-- **A waste rule** — one file in `src/rules/`, one fixture, one test. Several are pre-specced as `good first issue`.
+- **A waste rule** — one file in `src/rules/`, one fixture, one test. Several are pre-specced as `good first issue`, and `token-monitor donate-fixture <session>` turns one of your own sessions into a synthetic fixture to write it against.
 - **An adapter for another agent CLI** (Aider, OpenCode, Windsurf…) — bigger, and the highest-value change when a tool nobody has covered writes logs somewhere.
 
 `npm test` runs the suite; CI covers Node 24/25 on Linux + macOS.

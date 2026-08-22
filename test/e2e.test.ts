@@ -185,6 +185,39 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: donate-fixture writes a synthetic, re-collectable copy of one session', () => {
+  const listed = run(['analyze', '--json', ...DAYS]);
+  assert.equal(listed.code, 0);
+  const out = join(HOME, 'donated');
+
+  // The fixture sessions are seeded from test/fixtures; take one by prefix.
+  const bad = run(['donate-fixture', 'zzzzzzzz', '--out', out]);
+  assert.equal(bad.code, 1);
+  assert.ok(bad.stderr.includes('no session id starts with'));
+
+  const missing = run(['donate-fixture']);
+  assert.equal(missing.code, 1);
+
+  const ok = run(['donate-fixture', 's1', '--out', out]);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.ok(ok.stdout.includes('-Users-dev-project-1/session-1.jsonl'));
+  assert.ok(ok.stdout.includes('Read the files before attaching them to a PR'));
+
+  // It must re-collect: point a fresh HOME at it and run the real pipeline.
+  const home2 = mkdtempSync(join(tmpdir(), 'tm-donated-home-'));
+  mkdirSync(join(home2, '.claude'), { recursive: true });
+  cpSync(out, join(home2, '.claude', 'projects'), { recursive: true });
+  const collected = run(['collect', '--source', 'claude-code'], { home: home2 });
+  assert.equal(collected.code, 0);
+  assert.ok(/claude-code\s+\d+ files\s+[1-9]/.test(collected.stdout), collected.stdout);
+
+  const report = run(['report', ...DAYS], { home: home2 });
+  assert.equal(report.code, 0);
+  assert.ok(report.stdout.includes('project-1'));
+  // Nothing from the donor's own labels comes along.
+  assert.ok(!report.stdout.includes('proj-alpha'));
+});
+
 test('e2e: context reports the surface, and keeps tool/server names out of exports', () => {
   const { stdout, code } = run(['context', ...DAYS]);
   assert.equal(code, 0);
