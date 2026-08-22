@@ -20,6 +20,7 @@ import type { RelayResult, RelaySummary } from './relay-scan.js';
 import { fmtTokens } from './fmt.js';
 import type { Rule } from './rules/index.js';
 import { RULES, RULE_BY_KEY } from './rules/index.js';
+import type { ToolSurface } from './tool-surface.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -56,6 +57,23 @@ export function fmtCacheTtl(m: Metrics): string {
   return m.extendedCacheSessions === m.sessions
     ? '  ·  gaps measured against the 1h cache (every session)'
     : `  ·  gaps measured against the 1h cache on ${m.extendedCacheSessions} of ${m.sessions} sessions`;
+}
+
+/**
+ * The context-surface one-liner: the floor every turn re-reads and the results
+ * still riding along in it. Each half is silent when it was not measured —
+ * a window with too few sessions to take a median over, or sources that don't
+ * persist tool results, must not read as a floor of zero.
+ */
+export function fmtContextSurface(m: Metrics): string {
+  const parts: string[] = [];
+  if (m.floorSessions >= 1 && m.sessionFloorTokens > 0) {
+    parts.push(`context floor ${fmtTokens(m.sessionFloorTokens)}/session (${(m.floorShare * 100).toFixed(0)}% of main-loop context)`);
+  }
+  if (m.toolResultTurns > 0) {
+    parts.push(`tool-result carry ~${(m.toolResultCarryShare * 100).toFixed(0)}%`);
+  }
+  return parts.join('  ·  ');
 }
 
 export function fmtSubagents(m: Metrics): string {
@@ -141,6 +159,8 @@ export function renderReport(
   out.push(
     `  ${DIM}signals: context bloat ${m.bloatedSessions}/${m.trendSessions} long sessions  ·  cold restarts ${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input  ·  premium on exploration/chat ${(m.premiumWasteShare * 100).toFixed(0)}%  ·  retry loops ${(m.retryShare * 100).toFixed(1)}%${fmtSubagents(m)}${fmtCacheTtl(m)}${RESET}`,
   );
+  const ctx = fmtContextSurface(m);
+  if (ctx) out.push(`  ${DIM}${ctx}  ${RESET}${DIM}— run \`context\` for detail${RESET}`);
   if (opts.categorize) {
     out.push(
       `  ${YELLOW}🔁 ${fmtCategorizeSummary(opts.categorize)}${RESET} ${DIM}— run \`categorize\` for detail${RESET}`,
@@ -389,6 +409,107 @@ export function renderRelay(r: RelayResult): string {
   );
   out.push(
     `  ${DIM}Overlap is measured on hashed 8-word shingles; prompt and response text is never stored, printed, or sent.${RESET}\n`,
+  );
+  return out.join('\n');
+}
+
+/**
+ * Context economics: what the standing surface costs before a turn does
+ * anything. Three sections, in the order the money is usually found — the
+ * floor every turn re-reads, the results still riding along, and the servers
+ * whose definitions are part of that floor.
+ *
+ * Server and tool names appear HERE ONLY. They can name a client or an
+ * internal system, so they never enter an export or an --llm payload.
+ */
+export function renderContext(m: Metrics, surface: ToolSurface, days: number): string {
+  const out: string[] = [];
+  out.push(section(`Context economics — last ${days} days`));
+
+  if (m.floorSessions >= 1 && m.sessionFloorTokens > 0) {
+    out.push(
+      `  ${BOLD}Session floor ${fmtTokens(m.sessionFloorTokens)} tokens${RESET} ` +
+        `${DIM}(median of the smallest context each of ${m.floorSessions} main-loop session(s) ran with) — ${(m.floorShare * 100).toFixed(0)}% of main-loop context spend${RESET}`,
+    );
+    out.push(
+      `  ${DIM}System prompt, tool definitions of every connected MCP server, skills, and always-loaded memory files. Written once per session, re-read every turn after.${RESET}`,
+    );
+  } else {
+    out.push(`  ${DIM}Session floor: too few main-loop sessions in this window to take a median over.${RESET}`);
+  }
+
+  out.push(section('Tool-result carry (what returned payloads cost while they ride along)'));
+  if (!surface.measured) {
+    out.push(
+      `  ${DIM}No source in this window records tool results, so carry is unmeasured — not zero. Claude Code is the only source that persists them today.${RESET}`,
+    );
+  } else {
+    const est = m.costEstimated ? '~' : '~'; // always estimated: chars/4 + no-compaction assumption
+    out.push(
+      `  ${BOLD}${est}${fmtTokens(surface.totalCarryTokens)} carried tokens${RESET} ` +
+        `${DIM}from ${est}${fmtTokens(surface.totalReturnedTokens)} returned — ${(m.toolResultCarryShare * 100).toFixed(0)}% of all input-side tokens, ${est}$${surface.totalCarryUsd.toFixed(2)} at cache-read rates${RESET}`,
+    );
+    out.push('');
+    out.push(
+      table(
+        ['Tool', 'Calls', 'Returned', 'Avg carried', 'Carried tok', 'Cost'],
+        surface.tools.slice(0, 12).map((t) => [
+          t.tool.length > 34 ? t.tool.slice(0, 33) + '…' : t.tool,
+          String(t.calls),
+          '~' + fmtTokens(t.returnedTokens),
+          t.avgCarriedTurns.toFixed(1) + ' turns',
+          '~' + fmtTokens(t.carryTokens),
+          '~$' + t.carryUsd.toFixed(2),
+        ]),
+      ),
+    );
+    out.push(
+      `\n  ${YELLOW}→${RESET} Bound the big ones: a line limit, a narrower search, a paged call — or hand the payload to a subagent whose context ends with it.`,
+    );
+  }
+
+  out.push(section('MCP servers'));
+  if (surface.servers.length === 0) {
+    out.push(`  ${DIM}No MCP tool calls in this window.${RESET}`);
+  } else {
+    out.push(
+      table(
+        ['Server', 'Tools', 'Turns', 'Spend', 'Cost', 'Errors', 'Returned', 'Last used'],
+        surface.servers.map((s) => [
+          s.server.length > 24 ? s.server.slice(0, 23) + '…' : s.server,
+          String(s.tools),
+          String(s.turns),
+          fmtTokens(s.spendTokens),
+          '$' + s.costUsd.toFixed(2),
+          s.errorTurns ? `${(s.errorRate * 100).toFixed(0)}%` : `${DIM}—${RESET}`,
+          s.returnedTokens ? '~' + fmtTokens(s.returnedTokens) : `${DIM}—${RESET}`,
+          s.lastUsed,
+        ]),
+      ),
+    );
+  }
+
+  if (surface.unusedServers.length > 0) {
+    out.push('');
+    out.push(
+      `  ${YELLOW}⚠${RESET} ${BOLD}${surface.unusedServers.length} connected server(s) were never invoked in this window${RESET}: ${surface.unusedServers.join(', ')}`,
+    );
+    out.push(
+      `  ${DIM}Their tool definitions are still part of every request's floor. Usage is not value — a server called twice may have saved an afternoon — but a server called zero times is paying rent.${RESET}`,
+    );
+  } else if (surface.configNote) {
+    out.push(`\n  ${DIM}${surface.configNote}.${RESET}`);
+  } else if (surface.declaredServers.length) {
+    out.push(`\n  ${DIM}All ${surface.declaredServers.length} connected server(s) were invoked at least once.${RESET}`);
+  }
+  if (surface.undeclaredServers.length > 0) {
+    out.push(
+      `  ${DIM}${surface.undeclaredServers.length} invoked server(s) appear in no config this command can read (a project .mcp.json, or a plugin), so the connected list — and anything said about unused servers — is a lower bound.${RESET}`,
+    );
+  }
+
+  out.push(
+    `\n  ${DIM}Result sizes are estimated from characters (~4 chars/token). A result is counted as carried until its session ends or its context collapses (compaction and /clear are not logged, but the drop they cause is measurable) — an upper bound, additionally clamped to what each session actually paid. Server and tool names stay on this machine: they are never exported, signed, or sent to an LLM.${RESET}\n`,
   );
   return out.join('\n');
 }

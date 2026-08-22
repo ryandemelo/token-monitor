@@ -112,6 +112,103 @@ export interface Metrics {
    * was not counted at all.
    */
   subagentShare: number;
+  /**
+   * Estimated tokens tools RETURNED in the window (chars/4 — `~` territory,
+   * like the Copilot adapter's estimates), and the turns that measured them.
+   * `toolResultTurns === 0` means unmeasured, NOT "tools returned nothing":
+   * only sources that persist tool results can report this.
+   */
+  toolResultTokens: number;
+  toolResultTurns: number;
+  /**
+   * The carry tax (#83): a result is not paid once. It enters the context and
+   * rides along in every later request of its session, so its estimated tokens
+   * are multiplied by the turns that followed it. Clamped per session to the
+   * input-side tokens that session actually paid — compaction and /clear cut
+   * the carry short and the transcript does not always say where, so the
+   * estimate may never claim more context than the session provably bought.
+   */
+  toolResultCarryTokens: number;
+  /** Carry as a share of all input-side tokens in the window. */
+  toolResultCarryShare: number;
+  /**
+   * The standing context every turn re-reads before it does anything: system
+   * prompt, tool definitions of every connected MCP server, skills, CLAUDE.md.
+   * Measured as the MEDIAN first-turn input-side tokens across main-loop
+   * sessions (median, so one enormous resumed session can't set it), 0 when
+   * there are too few sessions to be worth a number.
+   */
+  sessionFloorTokens: number;
+  /** Main-loop sessions the median was taken over. */
+  floorSessions: number;
+  /** Main-loop turns the floor is charged against, and their input-side total. */
+  floorTurns: number;
+  floorBaseTokens: number;
+  /** floor × main-loop turns / main-loop input-side tokens. */
+  floorShare: number;
+}
+
+/** Middle value of a sorted array; 0 when empty. */
+function median(sorted: number[]): number {
+  if (sorted.length === 0) return 0;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Below this many main-loop sessions the floor is not reported. A median over
+ * two conversations is not a measurement, and the metric feeds a finding.
+ */
+export const FLOOR_MIN_SESSIONS = 5;
+
+/**
+ * A result stops being carried when the context it lives in is thrown away.
+ * Compaction and /clear are not written to the transcript, but their effect is:
+ * the next turn's context collapses. A turn whose input-side context is less
+ * than this fraction of the previous turn's is treated as a fresh segment.
+ *
+ * Measured rather than assumed, because assuming "carried to the end of the
+ * session" produced averages of several hundred turns against real
+ * transcripts — an upper bound so loose it stopped being a measurement.
+ */
+export const CARRY_RESET_RATIO = 0.5;
+/** Below this the previous context is too small for a drop to mean anything. */
+const CARRY_RESET_MIN_CTX = 20_000;
+
+const ctxOf = (e: StoredEvent) => e.input_tokens + e.cache_read_tokens + e.cache_creation_tokens;
+
+/**
+ * For each turn, how many LATER turns still carry the results it returned:
+ * to the end of its session, or to the next context reset, whichever is first.
+ * Shared by computeMetrics and the per-tool breakdown so the two can never
+ * disagree about the same session.
+ */
+export function carriedTurnsOf(arr: StoredEvent[]): number[] {
+  const ends: number[] = new Array(arr.length);
+  let segEnd = arr.length;
+  for (let i = arr.length - 1; i > 0; i--) {
+    const prev = ctxOf(arr[i - 1]);
+    if (prev >= CARRY_RESET_MIN_CTX && ctxOf(arr[i]) < prev * CARRY_RESET_RATIO) segEnd = i;
+    ends[i - 1] = segEnd;
+  }
+  if (arr.length > 0) ends[arr.length - 1] = Math.max(segEnd, arr.length);
+  return arr.map((_, i) => Math.max(0, (ends[i] ?? arr.length) - 1 - i));
+}
+
+/** Estimated tokens for a character count. Same ~4 chars/token the Copilot adapter uses. */
+export function estTokens(chars: number): number {
+  return Math.round(chars / 4);
+}
+
+/** Parse the per-turn `{tool: chars}` sizes; {} when the source didn't record any. */
+export function parseResultChars(json: string | null | undefined): Record<string, number> {
+  if (!json) return {};
+  try {
+    const v = JSON.parse(json);
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -139,6 +236,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   let mainFreshPaid = 0;
   let extendedCacheTokens = 0;
   let extendedCacheSessions = 0;
+  let toolResultTokens = 0, toolResultTurns = 0;
   const subagentSessions = new Set<string>();
 
   // Rework: group by session, walk chronologically, count spend after first failed event.
@@ -155,6 +253,11 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
       mainFreshPaid += e.input_tokens + e.cache_creation_tokens;
     }
     extendedCacheTokens += e.cache_creation_1h_tokens ?? 0;
+    const returned = Object.values(parseResultChars(e.tool_result_chars)).reduce((a, b) => a + b, 0);
+    if (returned > 0) {
+      toolResultTokens += estTokens(returned);
+      toolResultTurns++;
+    }
     input += e.input_tokens;
     output += e.output_tokens;
     cacheRead += e.cache_read_tokens;
@@ -195,6 +298,9 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   let trendSessions = 0, bloatedSessions = 0;
   let coldRestartTurns = 0, coldRestartTokens = 0;
   let retryTokens = 0;
+  let carryTokens = 0;
+  let floorTurns = 0, floorBaseTokens = 0;
+  const floors: number[] = [];
   for (const arr of bySession.values()) {
     const firstFail = arr.findIndex((e) => e.is_error && (e.activity === 'testing' || e.activity === 'coding'));
     if (firstFail !== -1) {
@@ -237,6 +343,40 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
       if (growth.ratio >= BLOAT_GROWTH && growth.lateFreshShare >= BLOAT_FRESH_SHARE) bloatedSessions++;
     }
 
+    // Carry tax: what each turn's results cost while they ride along in the
+    // requests that follow them, in THIS session (subagent runs included —
+    // this measures spend, and a run's results are as real as a conversation's).
+    const carried = carriedTurnsOf(arr);
+    let sessionCarry = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const chars = Object.values(parseResultChars(arr[i].tool_result_chars)).reduce((a, b) => a + b, 0);
+      if (chars > 0) sessionCarry += estTokens(chars) * carried[i];
+    }
+    // Backstop: never claim more carried context than the session provably paid
+    // for, even if the reset detection missed a compaction.
+    carryTokens += Math.min(sessionCarry, arr.reduce((t, e) => t + ctxOf(e), 0));
+
+    // Session floor: the SMALLEST input-side context any turn of the session
+    // ran with — the standing context (system prompt, tool definitions of every
+    // connected MCP server, skills, memory files) it never goes below.
+    //
+    // The minimum rather than the first turn, because a resumed session
+    // (`--continue`) starts with its whole prior history and a first turn can
+    // carry a large paste; on real data the two differ by under 3%, and the
+    // minimum is the one that cannot be inflated by either. A resumed session
+    // still overstates its floor — nothing in the transcript separates
+    // "standing context" from "history that came back" — which is why the
+    // window number is a median across sessions.
+    //
+    // Main loop only: a subagent run's first turn carries a task brief the
+    // user never typed and cannot trim.
+    if (mainRows.length > 0) {
+      const contexts = mainRows.map(ctxOf).filter((c) => c > 0);
+      if (contexts.length > 0) floors.push(Math.min(...contexts));
+      floorTurns += mainRows.length;
+      floorBaseTokens += mainRows.reduce((t, e) => t + ctxOf(e), 0);
+    }
+
     // Retry loops: a turn re-running a tool that just errored is paying for a retry.
     let prevErrTools: Set<string> | undefined;
     for (const e of arr) {
@@ -249,6 +389,8 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
   }
 
   const codingTokens = byActivity.coding.tokens || 1;
+  const inputSide = input + cacheRead + cacheCreate;
+  const floorTokens = floors.length >= FLOOR_MIN_SESSIONS ? median([...floors].sort((a, b) => a - b)) : 0;
   return {
     events: events.length,
     sessions: sessions.size,
@@ -285,6 +427,15 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     subagentSessions: subagentSessions.size,
     subagentSpendTokens,
     subagentShare: spendTokens ? subagentSpendTokens / spendTokens : 0,
+    toolResultTokens,
+    toolResultTurns,
+    toolResultCarryTokens: carryTokens,
+    toolResultCarryShare: inputSide ? carryTokens / inputSide : 0,
+    sessionFloorTokens: floorTokens,
+    floorSessions: floors.length,
+    floorTurns,
+    floorBaseTokens,
+    floorShare: floorBaseTokens ? (floorTokens * floorTurns) / floorBaseTokens : 0,
   };
 }
 

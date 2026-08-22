@@ -41,6 +41,25 @@ test('claude-code adapter parses turns, links tool errors, classifies', () => {
   assert.equal(e3.isError, false);
 });
 
+test('claude-code records tool RESULT SIZES per tool — never the result text', () => {
+  const { events } = collectClaudeCode(join(FIXTURES, 'claude-results'));
+  assert.equal(events.length, 3);
+  const [first, second, third] = events;
+
+  // 4001 chars from Grep (canary + padding); 1000 chars of text blocks from
+  // the MCP tool, summed across both blocks.
+  assert.deepEqual(first.toolResultChars, { Grep: 4001, 'mcp__acme_search__query': 1000 });
+  assert.deepEqual(second.toolResultChars, { Grep: 4 }); // "boom"
+  assert.equal(second.isError, true);
+  assert.equal(third.toolResultChars, undefined); // a turn with no tool calls
+
+  // The canary sits inside the result body in the fixture. Nothing the adapter
+  // emits may contain it — sizes are the only thing that survives.
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes('SECRET-RESULT-BODY-DO-NOT-STORE'));
+  assert.ok(!serialized.includes('xxxxxxxxxx'));
+});
+
 test('gemini-cli adapter parses checkpoints incl. thoughts and tool errors', () => {
   const { events } = collectGeminiCli(join(FIXTURES, 'gemini'));
   assert.equal(events.length, 2);

@@ -44,6 +44,17 @@ export interface UsageEvent {
   tools: string[];
   /** Shell command strings, for test/ship detection. */
   commands: string[];
+  /**
+   * Characters returned by each tool called in this turn, keyed by tool name —
+   * SIZES ONLY, never the text. A tool result is not paid once: it enters the
+   * context and rides along in every later request of the session, so its size
+   * and the number of turns it survives are what the carry tax is computed
+   * from (#83).
+   *
+   * Absent (not zero) for sources that don't persist results, so a vendor that
+   * cannot report this reads as unmeasured rather than free.
+   */
+  toolResultChars?: Record<string, number>;
   /** Turn produced visible reasoning (thinking blocks / thoughts). */
   hasThinking: boolean;
   /** A tool in this turn errored (test failure, bad command, etc.). */

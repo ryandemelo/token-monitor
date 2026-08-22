@@ -186,6 +186,41 @@ token-monitor analyze --llm
 
 No API key management: it reuses your existing agent CLI and its subscription. The payload is the same aggregates-only data as `report --json` (token counts, ratios, tool names, project basenames — never prompts or code). It does leave your machine via that agent's provider, so skip `--llm` if even project names are sensitive.
 
+## Context economics: what you pay before a turn does anything
+
+Every other number here prices what a turn *did*. `token-monitor context` prices what it had to **carry**:
+
+```
+Session floor 78.0k tokens (median of the smallest context each of 64 main-loop sessions ran with) — 17% of main-loop context spend
+
+Tool-result carry (what returned payloads cost while they ride along)
+  ~3.3B carried tokens from ~27.8M returned — 15% of all input-side tokens, ~$1630 at cache-read rates
+
+  Tool                     Calls  Returned  Avg carried  Carried tok  Cost
+  ─────────────────────    ─────  ────────  ───────────  ───────────  ────────
+  Bash                     41611  ~19.4M    186.1 turns  ~2.2B        ~$1099.62
+  Read                      2314  ~8.1M     117.0 turns  ~956.5M      ~$479.69
+
+MCP servers
+  Server        Tools  Turns  Spend  Cost   Errors  Returned  Last used
+  ───────────   ─────  ─────  ─────  ─────  ──────  ────────  ─────────
+  search            7     16  11.4k  $6.20  —       ~16.1k    2026-08-10
+
+  ⚠ 3 connected server(s) were never invoked in this window: …
+```
+
+Three measurements, all from logs you already collected:
+
+- **Session floor** — the smallest context a session ever runs with: system prompt, the tool definitions of every connected MCP server, loaded skills, `CLAUDE.md` and its imports. Written once, re-read every turn after. It is not waste — it is what makes the agent useful — but it is the number that moves permanently every time you connect a server or load a skill pack, and `report --trend` carries a row for it so you can see it creep. Measured over main-loop sessions only, as a median so one enormous resumed session can't set it.
+- **Tool-result carry** — a result is not paid once. It enters the context and is re-read in every later request of that session, so a 40k-token search result on turn 3 of a 30-turn session is carried ~27 more times. The remedy is usually a flag, not a workflow change: bound the output, page the MCP call, or hand the payload to a subagent whose context ends with it.
+- **Per-MCP-server spend** — turns, cost, error rate and returned bytes per server, plus the servers that are **connected and never invoked**, which are still paying for their tool definitions on every single request. Usage is not value: a server called twice may have saved an afternoon. A server called zero times is paying rent.
+
+Both context signals appear on the one-line summary in `report` and the dashboard, and two rules (`tool-result-bloat`, `context-floor-creep`) fire on them with priced savings.
+
+**Honesty.** Result sizes are estimated from characters (~4 chars/token) and marked `~`. A result counts as carried until its session ends or its context collapses — compaction and `/clear` aren't written to the transcript, but the drop they cause is measurable, and that is where the carry is cut — and the total is clamped per session to the input-side tokens that session actually paid, so it can never claim more context than was provably bought. Claude Code is currently the only source that persists tool results; every other source reports carry as **unmeasured**, never as zero.
+
+**Privacy.** Tool and MCP server names are shown by `context` and stay on the machine. They can name a client, an internal system or a private endpoint, so — exactly like subagent type names — they never enter an export, a signed payload, or an `--llm` payload; the LLM payload's tool-error rows are redacted to `mcp:<tool>`. Connected servers are read from the local agent config by **key only**: a server's command, arguments and environment are never parsed or stored.
+
 ## Data completeness
 
 Agent tools rotate their logs — Claude Code deletes transcripts after `cleanupPeriodDays` (default 30) — so a window can be full of holes without anything saying so. Every report now opens with what it actually covers:
@@ -323,6 +358,7 @@ token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|
 token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
 token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
+token-monitor context [--days 30] [--json] [--db <path>]
 token-monitor rules   [<rule-key>] [--days 30] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--threshold 0.4] [--min-cluster 2] [--json] [--html team.html]

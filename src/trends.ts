@@ -42,6 +42,15 @@ export function trendRows(now: Metrics, prev: Metrics): TrendRow[] {
     { label: 'Cold restarts', prev: prev.coldRestartShare, now: now.coldRestartShare, fmt: 'pct', good: 'down' },
     { label: 'Premium on exploration/chat', prev: prev.premiumWasteShare, now: now.premiumWasteShare, fmt: 'pct', good: 'down' },
     { label: 'Retry loops', prev: prev.retryShare, now: now.retryShare, fmt: 'pct', good: 'down' },
+    // The floor is what the trend is FOR: adding an MCP server or a skill pack
+    // moves it permanently, and a single window can't show that. Appears only
+    // once either window had enough sessions to take a median over.
+    ...(now.floorSessions || prev.floorSessions
+      ? [{ label: 'Session floor', prev: prev.sessionFloorTokens ?? 0, now: now.sessionFloorTokens ?? 0, fmt: 'tokens', good: 'down' } as TrendRow]
+      : []),
+    ...(now.toolResultTurns || prev.toolResultTurns
+      ? [{ label: 'Tool-result carry', prev: prev.toolResultCarryShare ?? 0, now: now.toolResultCarryShare ?? 0, fmt: 'pct', good: 'down' } as TrendRow]
+      : []),
     // Volume, not verdict: delegating more is neither good nor bad on its own,
     // so no `good` direction. Appears only once a window has fan-out in it.
     ...(now.subagentSessions || prev.subagentSessions

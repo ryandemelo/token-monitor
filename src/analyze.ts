@@ -3,6 +3,7 @@ import type { StoredEvent } from './store.js';
 import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, effectiveCacheTtlOf } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
+import { redactToolName } from './tool-surface.js';
 import { structuredFindings, fmtMetric } from './followthrough.js';
 import type { MetricKey, LlmIntervention, FollowRow } from './followthrough.js';
 import type { Activity } from './types.js';
@@ -293,6 +294,13 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
       premiumWasteShare: round(m.premiumWasteShare),
       retryShare: round(m.retryShare),
       subagentShare: round(m.subagentShare),
+      // Context surface (#82-#84): shares and counts only. Tool and MCP-server
+      // NAMES are deliberately absent — they can name a client or an internal
+      // system, so they stay on the machine exactly like agent types do.
+      toolResultCarryShare: round(m.toolResultCarryShare),
+      toolResultTurns: m.toolResultTurns,
+      sessionFloorTokens: m.sessionFloorTokens,
+      floorShare: round(m.floorShare),
       subagentSpendTokens: m.subagentSpendTokens,
       subagentRuns: m.subagentSessions,
       activityShares: Object.fromEntries(
@@ -331,9 +339,11 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
       mainSpendTokens: f.mainSpendTokens,
       ratio: round(f.ratio, 1),
     })),
+    // Tool names are redacted of their MCP server (see redactToolName): the
+    // failing tool is the signal, the server it belongs to is private.
     toolErrorRates: deep.toolStats
       .filter((t) => t.errorRate > 0.05 && t.turns >= 20)
-      .map((t) => ({ tool: t.tool, turns: t.turns, errorRate: round(t.errorRate, 2), retryTokens: t.retryTokens })),
+      .map((t) => ({ tool: redactToolName(t.tool), turns: t.turns, errorRate: round(t.errorRate, 2), retryTokens: t.retryTokens })),
     ruleBasedFindings: structuredFindings(m).map((f) => f.key),
   };
 }
@@ -345,10 +355,11 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
 export const TRACKABLE_METRICS: MetricKey[] = [
   'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio',
   'contextBloatShare', 'coldRestartShare', 'premiumWasteShare', 'retryShare',
+  'toolResultCarryShare', 'floorShare',
 ];
 
 const METRIC_DEFINITIONS =
-  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. toolResultCarryShare = estimated share of input-side tokens that is tool results still riding in the context after the turn that read them (result size x turns carried, cut at the next context reset); toolResultTurns = turns with measurable results, and 0 means UNMEASURED, not zero — only some sources persist tool results. sessionFloorTokens = median smallest context a session ever runs with (system prompt + tool definitions of connected MCP servers + skills + memory files); floorShare = that floor charged over main-loop turns / main-loop context tokens. Both are estimates: never quote them without saying so, and never advise removing a specific MCP server or tool by name — the payload deliberately contains no names. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
 
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.

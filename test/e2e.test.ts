@@ -185,6 +185,24 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: context reports the surface, and keeps tool/server names out of exports', () => {
+  const { stdout, code } = run(['context', ...DAYS]);
+  assert.equal(code, 0);
+  assert.ok(stdout.includes('Context economics'));
+  assert.ok(stdout.includes('Tool-result carry'));
+
+  const json = JSON.parse(run(['context', '--json', ...DAYS]).stdout);
+  assert.equal(typeof json.floorShare, 'number');
+  assert.equal(json.estimated, true);
+  assert.ok(Array.isArray(json.tools));
+
+  // The local command may name tools and servers; an export never may.
+  const exported = run(['report', '--json', ...DAYS]).stdout;
+  for (const t of json.tools as Array<{ tool: string }>) {
+    assert.ok(!exported.includes(t.tool), `export leaked tool name ${t.tool}`);
+  }
+});
+
 test('e2e: rules lists the catalogue, explains one rule, and rejects an unknown key', () => {
   const list = run(['rules', ...DAYS]);
   assert.equal(list.code, 0);
@@ -197,7 +215,7 @@ test('e2e: rules lists the catalogue, explains one rule, and rejects an unknown 
   assert.ok(one.stdout.includes('src/rules/high-rework.ts'));
 
   const json = JSON.parse(run(['rules', '--json', ...DAYS]).stdout);
-  assert.equal(json.length, 8);
+  assert.equal(json.length, 10);
   assert.ok(json.every((r: { key: string; docs: string }) => r.key && r.docs.length > 0));
 
   const bad = run(['rules', 'no-such-rule', ...DAYS]);

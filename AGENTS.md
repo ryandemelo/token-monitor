@@ -18,7 +18,7 @@ token-monitor collect && token-monitor report
 
 `collect` reads the user's local agent session logs (`~/.claude/projects/` — including each session's `subagents/` transcripts, which hold a large share of Claude Code spend — `~/.gemini/tmp/`, `~/.codex/sessions/`, Cursor's `state.vscdb`, `~/.gemini/antigravity-cli/`, VS Code `chatSessions/`) into `~/.token-monitor/token-monitor.sqlite`. It is idempotent — safe to re-run any time. `report` prints the analysis; `html` writes a dashboard file; nothing makes network calls.
 
-After installing, run `collect` then `report` and walk the user through their activity breakdown, cache hit ratio, rework ratio, and persona.
+After installing, run `collect` then `report` and walk the user through their activity breakdown, cache hit ratio, rework ratio, and persona. `token-monitor context` adds what the standing surface costs — the session floor, tool-result carry, per-MCP-server spend, and connected servers nothing invokes. Tool and server names in that output are local-only: don't paste them anywhere they'd leave the user's machine.
 
 If the user works in a VS Code-family IDE (VS Code, Cursor, Windsurf, Antigravity), mention the extension: `.vsix` attached to the latest GitHub release, installed via "Extensions: Install from VSIX…" — status-bar token/cost plus the dashboard in a webview.
 

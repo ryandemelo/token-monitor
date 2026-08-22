@@ -39,6 +39,8 @@ test('registry: shipped rule keys and their order are stable', () => {
     'cold-restarts',
     'premium-misroute',
     'tool-retry-loops',
+    'tool-result-bloat',
+    'context-floor-creep',
   ]);
 });
 

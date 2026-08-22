@@ -272,8 +272,13 @@ function unitValuePerPoint(metric: MetricKey, m: Metrics, rates: BlendedRates): 
     case 'premiumWasteShare':
       return m.spendTokens * Math.max(0, rates.premium - rates.cheap);
     case 'coldRestartShare':
-      // Same population as the ratio — see savingsUsd('cold-restarts').
+      // Same population as the ratio — see the cold-restarts rule's savings().
       return (m.coldRestartBaseTokens ?? m.inputTokens + m.cacheCreationTokens) * (rates.input - rates.cacheRead);
+    case 'toolResultCarryShare':
+      // Carried context is re-read from cache; same rate its rule prices with.
+      return inputSide * rates.cacheRead;
+    case 'floorShare':
+      return (m.floorBaseTokens ?? 0) * rates.cacheRead;
     default:
       return undefined; // thinkToCodeRatio, contextBloatShare: not $-translatable
   }

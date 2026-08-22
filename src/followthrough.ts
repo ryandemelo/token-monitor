@@ -25,7 +25,9 @@ export type MetricKey =
   | 'contextBloatShare'
   | 'coldRestartShare'
   | 'premiumWasteShare'
-  | 'retryShare';
+  | 'retryShare'
+  | 'toolResultCarryShare'
+  | 'floorShare';
 
 export { premiumShare };
 
@@ -48,6 +50,8 @@ export const METRIC_DIRECTION: Record<MetricKey, 'up' | 'down'> = {
   coldRestartShare: 'down',
   premiumWasteShare: 'down',
   retryShare: 'down',
+  toolResultCarryShare: 'down',
+  floorShare: 'down',
 };
 
 /**

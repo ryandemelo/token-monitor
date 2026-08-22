@@ -122,6 +122,7 @@ export function makeStored(partial: Partial<StoredEvent> = {}): StoredEvent {
     cache_creation_1h_tokens: 0,
     parent_session_id: null,
     agent_type: null,
+    tool_result_chars: null,
     ...partial,
   };
 }
