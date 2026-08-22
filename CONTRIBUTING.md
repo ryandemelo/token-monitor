@@ -25,7 +25,9 @@ A **rule** is one heuristic that turns metrics into a finding: a firing conditio
 
 Run `token-monitor rules` to see the catalogue and which fire on your own data, and `token-monitor rules <key>` for what one measures. Several are pre-specced as `good first issue` in the tracker, each with its failure modes written down.
 
-One file in `src/rules/`, listed once in `src/rules/index.ts`:
+A rule is **two edits**: the file, and one line registering it. Both are required — an unregistered rule is never loaded, so it silently never fires.
+
+**1. Write `src/rules/<key>.ts`.** The filename must match the rule's `key`.
 
 ```ts
 // src/rules/tool-retry-loops.ts
@@ -45,6 +47,19 @@ const rule: Rule = {
 };
 export default rule;
 ```
+
+**2. Register it in `src/rules/index.ts`** — the import *and* the array entry:
+
+```ts
+import toolRetryLoops from './tool-retry-loops.js';   // <- add the import
+
+export const RULES: Rule[] = [
+  // ...
+  toolRetryLoops,                                     // <- and the entry
+];
+```
+
+`npm test` fails with `rule file src/rules/<key>.ts is not registered` if you miss either half, so you will not find out from a confusing assertion somewhere else.
 
 Only `key`, `metric`, `direction`, `title`, `docs` and `fires` are required. `score` supplies the "worst sessions" evidence; `savings` prices the finding; `target`/`personalTarget` say what it is priced against; `clause` appends a sentence that needs the raw events. See `src/rules/types.ts` for the full contract and `src/rules/low-think-code.ts` for a rule that deliberately prices nothing.
 
