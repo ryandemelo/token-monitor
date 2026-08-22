@@ -68,6 +68,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'session-thrash',
   ]);
 });
 
