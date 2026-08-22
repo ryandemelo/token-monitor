@@ -6,6 +6,9 @@ import { structuredFindings } from '../src/followthrough.js';
 import { enrichFindings, targetFor } from '../src/recommendations.js';
 import { renderRules, renderRule } from '../src/report.js';
 import { makeStored } from './helpers.js';
+import { readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { StoredEvent } from '../src/store.js';
 
 test('registry: keys are unique, complete, and every rule keeps the contract', () => {
@@ -18,6 +21,29 @@ test('registry: keys are unique, complete, and every rule keeps the contract', (
     // A rule that prices savings must declare what it is priced against:
     // either a target (static or personalized) or tokens it can name directly.
     assert.equal(typeof r.fires, 'function');
+  }
+});
+
+/**
+ * A rule file that never reaches index.ts is dead code: it cannot fire, cannot
+ * be listed, and the only symptom is an unrelated assertion failing somewhere
+ * else. That happened to a contributor's first PR, so the suite now says it in
+ * one line — and pins the filename-is-the-key convention while it is here.
+ */
+test('registry: every rule file is registered, and its filename is its key', () => {
+  const rulesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'rules');
+  const files = readdirSync(rulesDir)
+    .filter((f) => f.endsWith('.ts') && f !== 'index.ts' && f !== 'types.ts')
+    .map((f) => f.replace(/\.ts$/, ''));
+  assert.ok(files.length > 0, 'no rule files found — check the path');
+  for (const key of files) {
+    assert.ok(
+      RULE_BY_KEY.has(key),
+      `rule file src/rules/${key}.ts is not registered — add its import and its entry to src/rules/index.ts`,
+    );
+  }
+  for (const rule of RULES) {
+    assert.ok(files.includes(rule.key), `rule "${rule.key}" has no src/rules/${rule.key}.ts (filename must match the key)`);
   }
 });
 
