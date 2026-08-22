@@ -146,7 +146,44 @@ export interface Metrics {
   floorBaseTokens: number;
   /** floor × main-loop turns / main-loop input-side tokens. */
   floorShare: number;
+  /**
+   * Outcomes (#66). Every other metric here is denominator-less — this is the
+   * first one that asks what the tokens BOUGHT.
+   *
+   * A session counts as shipped when it has a shipping turn (git commit/push,
+   * gh pr, git merge — the classifier already marks these on every source) or
+   * a linked pull request. Conversations only: a subagent run ships through
+   * its caller.
+   */
+  shippedSessions: number;
+  conversations: number;
+  shippedShare: number;
+  costPerShippedSession: number;
+  tokensPerShippedSession: number;
+  /**
+   * Spend in work STREAMS — project + branch groups — that contain coding
+   * turns and reached no ship signal anywhere in the window, and have been
+   * idle long enough that they are unlikely to still be in flight.
+   */
+  abandonedTokens: number;
+  abandonedShare: number;
+  abandonedStreams: number;
+  /**
+   * Streams with no ship signal that are still ACTIVE. Counted separately and
+   * never called abandoned: accusing work in flight is the fastest way to make
+   * an outcome metric worthless.
+   */
+  openStreams: number;
+  openTokens: number;
 }
+
+/**
+ * A stream is only abandoned once it has stopped moving. Anything touched
+ * within OPEN_DAYS is "open"; only streams idle past ABANDON_IDLE_DAYS count
+ * as abandoned, and only those feed a savings estimate.
+ */
+export const OPEN_DAYS = 3;
+export const ABANDON_IDLE_DAYS = 7;
 
 /** Middle value of a sorted array; 0 when empty. */
 function median(sorted: number[]): number {
@@ -222,7 +259,15 @@ export function premiumShare(m: Metrics): number {
   return premium.reduce((s, [, v]) => s + v.tokens, 0) / (m.spendTokens || 1);
 }
 
-export function computeMetrics(events: StoredEvent[]): Metrics {
+export function computeMetrics(
+  events: StoredEvent[],
+  opts: {
+    /** Sessions with a linked pull request (store.loadPrSessions). */
+    prSessions?: Set<string>;
+    /** Clock for the window-edge guards; injectable so tests are deterministic. */
+    now?: number;
+  } = {},
+): Metrics {
   const byActivity = Object.fromEntries(
     ACTIVITIES.map((a) => [a, { tokens: 0, share: 0, events: 0 }]),
   ) as Metrics['byActivity'];
@@ -390,6 +435,7 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
 
   const codingTokens = byActivity.coding.tokens || 1;
   const inputSide = input + cacheRead + cacheCreate;
+  const outcomes = computeOutcomes(events, opts);
   const floorTokens = floors.length >= FLOOR_MIN_SESSIONS ? median([...floors].sort((a, b) => a - b)) : 0;
   return {
     events: events.length,
@@ -436,6 +482,77 @@ export function computeMetrics(events: StoredEvent[]): Metrics {
     floorTurns,
     floorBaseTokens,
     floorShare: floorBaseTokens ? (floorTokens * floorTurns) / floorBaseTokens : 0,
+    ...outcomes,
+  };
+}
+
+/** The shipping-and-abandonment half of Metrics — see the fields for the rules. */
+function computeOutcomes(
+  events: StoredEvent[],
+  opts: { prSessions?: Set<string>; now?: number },
+): Pick<
+  Metrics,
+  'shippedSessions' | 'conversations' | 'shippedShare' | 'costPerShippedSession'
+  | 'tokensPerShippedSession' | 'abandonedTokens' | 'abandonedShare' | 'abandonedStreams'
+  | 'openStreams' | 'openTokens'
+> {
+  const now = opts.now ?? Date.now();
+  // Ship signals are counted per CONVERSATION: a subagent run ships through
+  // whoever spawned it, and counting runs would swamp the denominator with
+  // work that structurally cannot ship on its own.
+  const byRoot = groupByRootSession(events);
+  let shipped = 0, shippedCost = 0, shippedTokens = 0;
+  for (const [root, rows] of byRoot) {
+    const didShip =
+      rows.some((e) => e.activity === 'shipping') || Boolean(opts.prSessions?.has(root));
+    if (!didShip) continue;
+    shipped++;
+    for (const e of rows) {
+      shippedTokens += e.input_tokens + e.output_tokens;
+      shippedCost += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
+    }
+  }
+
+  // Streams: project + branch. Branchless sources fall back to the session, so
+  // they still get an honest (if coarser) answer instead of one big stream.
+  const streams = new Map<string, { tokens: number; last: number; ships: boolean; codes: boolean }>();
+  for (const e of events) {
+    if (e.is_sidechain) continue;
+    const key = e.git_branch ? `${e.project}\u001f${e.git_branch}` : `${e.project}\u001f\u0000${e.session_id}`;
+    const s = streams.get(key) ?? { tokens: 0, last: 0, ships: false, codes: false };
+    s.tokens += e.input_tokens + e.output_tokens;
+    s.last = Math.max(s.last, Date.parse(e.ts));
+    if (e.activity === 'shipping' || opts.prSessions?.has(e.session_id)) s.ships = true;
+    if (e.activity === 'coding') s.codes = true;
+    streams.set(key, s);
+  }
+
+  let abandonedTokens = 0, abandonedStreams = 0, openTokens = 0, openStreams = 0;
+  for (const s of streams.values()) {
+    if (s.ships || !s.codes) continue; // nothing to accuse: it shipped, or it never wrote code
+    const idleDays = (now - s.last) / 86_400_000;
+    if (idleDays < ABANDON_IDLE_DAYS) {
+      // Still plausibly in flight. Counted, named separately, never accused.
+      openStreams++;
+      openTokens += s.tokens;
+    } else {
+      abandonedStreams++;
+      abandonedTokens += s.tokens;
+    }
+  }
+
+  const spend = events.reduce((t, e) => t + e.input_tokens + e.output_tokens, 0);
+  return {
+    shippedSessions: shipped,
+    conversations: byRoot.size,
+    shippedShare: byRoot.size ? shipped / byRoot.size : 0,
+    costPerShippedSession: shipped ? shippedCost / shipped : 0,
+    tokensPerShippedSession: shipped ? shippedTokens / shipped : 0,
+    abandonedTokens,
+    abandonedShare: spend ? abandonedTokens / spend : 0,
+    abandonedStreams,
+    openStreams,
+    openTokens,
   };
 }
 

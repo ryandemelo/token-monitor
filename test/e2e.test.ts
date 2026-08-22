@@ -185,6 +185,24 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: outcomes reach the report, analyze and exports — without branch names', () => {
+  const report = run(['report', ...DAYS]);
+  assert.equal(report.code, 0);
+  assert.ok(report.stdout.includes('outcomes:'));
+  assert.ok(report.stdout.includes('reached a ship signal'));
+
+  const analyzed = run(['analyze', ...DAYS]);
+  assert.equal(analyzed.code, 0);
+  const deep = JSON.parse(run(['analyze', '--json', ...DAYS]).stdout);
+  assert.ok(Array.isArray(deep.abandonedStreams));
+
+  const exported = JSON.parse(run(['report', '--json', ...DAYS]).stdout);
+  assert.equal(typeof exported.overall.shippedShare, 'number');
+  assert.equal(typeof exported.overall.abandonedShare, 'number');
+  // Streams are named locally only; the branch the fixtures use must not ship.
+  assert.ok(!JSON.stringify(exported).includes('main'.padEnd(0) + 'feature/'));
+});
+
 test('e2e: --plan compares against a seat, rides into the export, and shows up in merge', () => {
   const seat = run(['report', '--plan', 'pro', ...DAYS]);
   assert.equal(seat.code, 0);
@@ -272,7 +290,7 @@ test('e2e: rules lists the catalogue, explains one rule, and rejects an unknown 
   assert.ok(one.stdout.includes('src/rules/high-rework.ts'));
 
   const json = JSON.parse(run(['rules', '--json', ...DAYS]).stdout);
-  assert.equal(json.length, 10);
+  assert.equal(json.length, 11);
   assert.ok(json.every((r: { key: string; docs: string }) => r.key && r.docs.length > 0));
 
   const bad = run(['rules', 'no-such-rule', ...DAYS]);

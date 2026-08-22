@@ -73,7 +73,11 @@ export interface ExportV1 {
   plan?: string;
 }
 
-export function buildExport(events: StoredEvent[], days: number, opts: { plan?: string } = {}): ExportV1 {
+export function buildExport(
+  events: StoredEvent[],
+  days: number,
+  opts: { plan?: string; prSessions?: Set<string> } = {},
+): ExportV1 {
   return {
     ...(opts.plan ? { plan: opts.plan } : {}),
     version: 1,
@@ -81,10 +85,10 @@ export function buildExport(events: StoredEvent[], days: number, opts: { plan?: 
     host: hostname(),
     generatedAt: new Date().toISOString(),
     days,
-    overall: computeMetrics(events),
+    overall: computeMetrics(events, { prSessions: opts.prSessions }),
     coverage: computeCoverage(events, days),
     byProject: Object.fromEntries(
-      [...groupBy(events, 'project')].map(([p, evs]) => [p, computeMetrics(evs)]),
+      [...groupBy(events, 'project')].map(([p, evs]) => [p, computeMetrics(evs, { prSessions: opts.prSessions })]),
     ),
   };
 }
@@ -215,6 +219,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     toolResultTokens: 0, toolResultTurns: 0,
     toolResultCarryTokens: 0, toolResultCarryShare: 0,
     sessionFloorTokens: 0, floorSessions: 0, floorTurns: 0, floorBaseTokens: 0, floorShare: 0,
+    shippedSessions: 0, conversations: 0, shippedShare: 0,
+    costPerShippedSession: 0, tokensPerShippedSession: 0,
+    abandonedTokens: 0, abandonedShare: 0, abandonedStreams: 0, openStreams: 0, openTokens: 0,
   };
   for (const m of list) {
     out.events += m.events;
@@ -255,6 +262,16 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     // is why both are carried; the merged "floor" below is therefore a
     // turn-weighted mean of member medians, not a team median.
     out.sessionFloorTokens += (m.sessionFloorTokens ?? 0) * (m.floorTurns ?? 0);
+    // Outcomes: counts and token sums compose; the shares and per-shipped
+    // figures are recomputed from the merged totals below.
+    out.shippedSessions += m.shippedSessions ?? 0;
+    out.conversations += m.conversations ?? 0;
+    out.costPerShippedSession += (m.costPerShippedSession ?? 0) * (m.shippedSessions ?? 0);
+    out.tokensPerShippedSession += (m.tokensPerShippedSession ?? 0) * (m.shippedSessions ?? 0);
+    out.abandonedTokens += m.abandonedTokens ?? 0;
+    out.abandonedStreams += m.abandonedStreams ?? 0;
+    out.openStreams += m.openStreams ?? 0;
+    out.openTokens += m.openTokens ?? 0;
     for (const a of ACTIVITIES) {
       byActivity[a].tokens += m.byActivity[a]?.tokens ?? 0;
       byActivity[a].events += m.byActivity[a]?.events ?? 0;
@@ -281,6 +298,10 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;
   out.toolResultCarryShare = denom ? out.toolResultCarryTokens / denom : 0;
+  out.shippedShare = out.conversations ? out.shippedSessions / out.conversations : 0;
+  out.costPerShippedSession = out.shippedSessions ? out.costPerShippedSession / out.shippedSessions : 0;
+  out.tokensPerShippedSession = out.shippedSessions ? out.tokensPerShippedSession / out.shippedSessions : 0;
+  out.abandonedShare = out.spendTokens ? out.abandonedTokens / out.spendTokens : 0;
   // Finish the turn-weighted mean started in the loop, then recombine the
   // share from the summed numerator/denominator rather than from the mean.
   const floorNumerator = out.sessionFloorTokens;

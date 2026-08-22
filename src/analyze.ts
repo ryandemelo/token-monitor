@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import type { StoredEvent } from './store.js';
-import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, effectiveCacheTtlOf } from './metrics.js';
+import { computeMetrics, groupBy, contextGrowthOf, parseTools, rootSessionOf, effectiveCacheTtlOf, ABANDON_IDLE_DAYS } from './metrics.js';
 import { costOf } from './pricing.js';
 import { assignPersona } from './personas.js';
 import { redactToolName } from './tool-surface.js';
@@ -211,6 +211,66 @@ export function computeToolStats(events: StoredEvent[]): ToolStat[] {
     .sort((a, b) => b.turns - a.turns);
 }
 
+/**
+ * One work stream that wrote code and never reached a ship signal. LOCAL
+ * ONLY — the branch is the whole point of the row and branch names name
+ * features and clients, so this never enters an export or an --llm payload.
+ */
+export interface AbandonedStream {
+  project: string;
+  branch: string;
+  spendTokens: number;
+  costUsd: number;
+  sessions: number;
+  lastActivity: string;
+  idleDays: number;
+  /** Recent enough to still be in flight: shown, never called abandoned. */
+  open: boolean;
+}
+
+export function computeAbandonedStreams(
+  events: StoredEvent[],
+  opts: { prSessions?: Set<string>; now?: number } = {},
+): AbandonedStream[] {
+  const now = opts.now ?? Date.now();
+  const streams = new Map<string, {
+    project: string; branch: string; tokens: number; cost: number;
+    sessions: Set<string>; last: number; ships: boolean; codes: boolean;
+  }>();
+  for (const e of events) {
+    if (e.is_sidechain) continue;
+    const branch = e.git_branch ?? '(no branch)';
+    const key = `${e.project}\u001f${e.git_branch ?? '\u0000' + e.session_id}`;
+    const s = streams.get(key) ?? {
+      project: e.project, branch, tokens: 0, cost: 0,
+      sessions: new Set<string>(), last: 0, ships: false, codes: false,
+    };
+    s.tokens += e.input_tokens + e.output_tokens;
+    s.cost += costOf(e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_creation_tokens).usd;
+    s.sessions.add(e.session_id);
+    s.last = Math.max(s.last, Date.parse(e.ts));
+    if (e.activity === 'shipping' || opts.prSessions?.has(e.session_id)) s.ships = true;
+    if (e.activity === 'coding') s.codes = true;
+    streams.set(key, s);
+  }
+  return [...streams.values()]
+    .filter((s) => !s.ships && s.codes)
+    .map((s) => {
+      const idleDays = (now - s.last) / 86_400_000;
+      return {
+        project: s.project,
+        branch: s.branch,
+        spendTokens: s.tokens,
+        costUsd: s.cost,
+        sessions: s.sessions.size,
+        lastActivity: new Date(s.last).toISOString().slice(0, 10),
+        idleDays: Math.floor(idleDays),
+        open: idleDays < ABANDON_IDLE_DAYS,
+      };
+    })
+    .sort((a, b) => b.spendTokens - a.spendTokens);
+}
+
 export interface DeepAnalysis {
   expensiveSessions: SessionStat[];
   fixLoopSessions: SessionStat[];
@@ -220,9 +280,13 @@ export interface DeepAnalysis {
   toolStats: ToolStat[];
   fanOutSessions: FanOutStat[];
   agentTypes: AgentTypeStat[];
+  abandonedStreams: AbandonedStream[];
 }
 
-export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
+export function deepAnalysis(
+  events: StoredEvent[],
+  opts: { prSessions?: Set<string> } = {},
+): DeepAnalysis {
   const stats = computeSessionStats(events);
   // Every list here describes a CONVERSATION. Subagent runs outnumber them
   // ~14:1 and would otherwise fill all eight rows of the tables that are the
@@ -250,6 +314,7 @@ export function deepAnalysis(events: StoredEvent[]): DeepAnalysis {
     toolStats: computeToolStats(events).slice(0, 15),
     fanOutSessions: computeFanOut(events).slice(0, 8),
     agentTypes: computeAgentTypes(events).slice(0, 10),
+    abandonedStreams: computeAbandonedStreams(events, opts).slice(0, 10),
   };
 }
 
@@ -301,6 +366,14 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
       toolResultTurns: m.toolResultTurns,
       sessionFloorTokens: m.sessionFloorTokens,
       floorShare: round(m.floorShare),
+      // Outcomes: shares and counts. The streams themselves stay local —
+      // a branch name names a feature or a client.
+      shippedShare: round(m.shippedShare),
+      shippedSessions: m.shippedSessions,
+      costPerShippedSession: round(m.costPerShippedSession, 2),
+      abandonedShare: round(m.abandonedShare),
+      abandonedStreams: m.abandonedStreams,
+      openStreams: m.openStreams,
       subagentSpendTokens: m.subagentSpendTokens,
       subagentRuns: m.subagentSessions,
       activityShares: Object.fromEntries(
@@ -355,11 +428,11 @@ export function buildLlmPayload(events: StoredEvent[], days: number): object {
 export const TRACKABLE_METRICS: MetricKey[] = [
   'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio',
   'contextBloatShare', 'coldRestartShare', 'premiumWasteShare', 'retryShare',
-  'toolResultCarryShare', 'floorShare',
+  'toolResultCarryShare', 'floorShare', 'abandonedShare',
 ];
 
 const METRIC_DEFINITIONS =
-  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. toolResultCarryShare = estimated share of input-side tokens that is tool results still riding in the context after the turn that read them (result size x turns carried, cut at the next context reset); toolResultTurns = turns with measurable results, and 0 means UNMEASURED, not zero — only some sources persist tool results. sessionFloorTokens = median smallest context a session ever runs with (system prompt + tool definitions of connected MCP servers + skills + memory files); floorShare = that floor charged over main-loop turns / main-loop context tokens. Both are estimates: never quote them without saying so, and never advise removing a specific MCP server or tool by name — the payload deliberately contains no names. Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
+  'Definitions: reworkRatio = share of tokens spent on coding/testing turns after the first failed turn in a session (fix loops). cacheHitRatio = cache reads / all input-side tokens (reads cost ~10% of fresh input). thinkToCodeRatio = (planning+exploration tokens) / coding tokens. fixIterations = testing->coding transitions in one session. avgContextTokens = mean context fed per turn (bloat proxy). contextGrowth = late-half avg context / early half per session; contextBloatShare = share of long sessions growing >=2x without cache keeping pace. coldRestartTokens = input re-paid on turns resuming after the ~5-min cache TTL; coldRestartShare = that over MAIN-LOOP fresh-paid input (subagent runs are excluded from both sides). premiumWasteShare = premium-model tokens on exploration/conversation turns / all spend. retryShare/retryTokens = spend on turns re-running a tool right after it errored. subagentShare = share of spend from subagent (Task/Agent fan-out) runs rather than the main loop; fanOutSessions lists the sessions that delegated most, with the subagent-to-main-loop spend ratio. Fan-out is not waste by default — flag it only when the delegated spend has nothing to show for it. Every per-session list (expensiveSessions, fixLoopSessions, contextHeavySessions, bloatTrendSessions, coldRestartSessions) contains CONVERSATIONS only; subagent runs appear solely as aggregates in fanOutSessions, so never advise compacting, restarting or batching a subagent run. contextBloatShare and coldRestartShare are measured over main-loop sessions only. toolResultCarryShare = estimated share of input-side tokens that is tool results still riding in the context after the turn that read them (result size x turns carried, cut at the next context reset); toolResultTurns = turns with measurable results, and 0 means UNMEASURED, not zero — only some sources persist tool results. sessionFloorTokens = median smallest context a session ever runs with (system prompt + tool definitions of connected MCP servers + skills + memory files); floorShare = that floor charged over main-loop turns / main-loop context tokens. Both are estimates: never quote them without saying so, and never advise removing a specific MCP server or tool by name — the payload deliberately contains no names. shippedShare = share of CONVERSATIONS that reached a ship signal (a commit/push/PR/merge turn, or a linked pull request); costPerShippedSession = window cost over those sessions. abandonedShare = spend in project+branch streams that wrote code, reached no ship signal, and have since sat idle for a week or more; openStreams are unshipped streams still recently active and are NOT abandoned. Research, spikes and learning ship nothing by design — never call unshipped work waste on its own, and never name a branch (the payload deliberately contains none). Personas: architect (plans first), surgeon (precise, low waste), explorer (heavy reading), sprinter (codes first, reworks later), firefighter (test-fail loops), balanced.';
 
 export function buildLlmPrompt(events: StoredEvent[], days: number): string {
   return `You are an engineering-efficiency analyst. The JSON below contains AGGREGATE token-usage telemetry from AI coding agents (Claude Code / Gemini CLI / Codex) for one developer or team over ${days} days. There is no prompt or code content — only counts, ratios, tool names, and project names.
@@ -516,9 +589,13 @@ export function renderTrackedLlm(rows: FollowRow[], parsed: ParsedFindings): str
   return out.join('\n');
 }
 
-export function renderAnalysis(events: StoredEvent[], days: number): string {
-  const deep = deepAnalysis(events);
-  const m = computeMetrics(events);
+export function renderAnalysis(
+  events: StoredEvent[],
+  days: number,
+  opts: { prSessions?: Set<string> } = {},
+): string {
+  const deep = deepAnalysis(events, opts);
+  const m = computeMetrics(events, { prSessions: opts.prSessions });
   const out: string[] = [];
   // A subagent run is a "session" only in the bookkeeping sense; mark it so a
   // 40-agent fan-out doesn't read as 40 people-sized conversations.
@@ -638,6 +715,27 @@ export function renderAnalysis(events: StoredEvent[], days: number): string {
           fmtTokens(t.retryTokens),
         ]),
       ),
+    );
+  }
+  if (deep.abandonedStreams.length) {
+    out.push(`\n${'\x1b[1m'}Unshipped work streams (project + branch, no ship signal in the window)${'\x1b[0m'}`);
+    out.push(
+      table(
+        ['Project', 'Branch', 'Sessions', 'Tokens', 'Cost', 'Last', 'Idle', 'State'],
+        deep.abandonedStreams.map((s) => [
+          s.project.length > 20 ? s.project.slice(0, 19) + '…' : s.project,
+          s.branch.length > 24 ? s.branch.slice(0, 23) + '…' : s.branch,
+          String(s.sessions),
+          fmtTokens(s.spendTokens),
+          '$' + s.costUsd.toFixed(2),
+          s.lastActivity,
+          s.idleDays + 'd',
+          s.open ? '\x1b[2mopen\x1b[0m' : '\x1b[33munshipped\x1b[0m',
+        ]),
+      ),
+    );
+    out.push(
+      `\n  ${'\x1b[2m'}Correlation, not causation: a stream that wrote code and reached no commit, PR or merge in this window. Research and spikes ship nothing by design, and anything touched in the last ${ABANDON_IDLE_DAYS} days is marked open rather than counted. Branch names stay on this machine.${'\x1b[0m'}`,
     );
   }
   const recs = enrichFindings(events, m, days);

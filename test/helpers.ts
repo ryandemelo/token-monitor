@@ -123,6 +123,7 @@ export function makeStored(partial: Partial<StoredEvent> = {}): StoredEvent {
     parent_session_id: null,
     agent_type: null,
     tool_result_chars: null,
+    git_branch: null,
     ...partial,
   };
 }
