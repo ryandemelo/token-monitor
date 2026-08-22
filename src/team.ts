@@ -209,7 +209,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, thinkingTokens: 0,
     spendTokens: 0, costUsd: 0, costEstimated: false, costUnpricedTokens: 0,
     cacheHitRatio: 0, reworkTokens: 0, reworkRatio: 0, errorEvents: 0,
-    byActivity, byModel, thinkToCodeRatio: 0,
+    byActivity, byModel, thinkToCodeRatio: 0, testingShare: 0,
     trendSessions: 0, bloatedSessions: 0, contextBloatShare: 0,
     coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0, coldRestartBaseTokens: 0,
     premiumWasteTokens: 0, premiumWasteShare: 0,
@@ -312,6 +312,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     : 0;
   out.thinkToCodeRatio =
     (byActivity.thinking.tokens + byActivity.exploration.tokens) / (byActivity.coding.tokens || 1);
+  out.testingShare = byActivity.testing.tokens / (byActivity.testing.tokens + byActivity.coding.tokens || 1);
   return out;
 }
 
