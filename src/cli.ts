@@ -6,7 +6,7 @@ import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
 } from './store.js';
-import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay } from './report.js';
+import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay, renderRules, renderRule, lookupRule } from './report.js';
 import { runRelayScan, relaySummary } from './relay-scan.js';
 import { runCategorize, categorizeSummary, exportCategories } from './categorize.js';
 import type { ExportCategory } from './team.js';
@@ -15,6 +15,7 @@ import { splitWindow } from './trends.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import { buildExport, parseTeamConfig, mergeMetrics, dedupeExports, rollupExports, displayName, identityOf } from './team.js';
 import { syncFindings, recordLlmFindings } from './followthrough.js';
+import { RULES } from './rules/index.js';
 import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
@@ -34,6 +35,7 @@ Usage:
   token-monitor categorize [--days <n>] [--threshold <0-1>] [--min-cluster <n>] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor relay   [--days <n>] [--threshold <0-1>] [--source <name>] [--json] [--db <path>]
+  token-monitor rules   [<rule-key>] [--days <n>] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
                         [--verify] [--keys keys.json] [--threshold <0-1>]
@@ -59,6 +61,10 @@ Commands:
             hand-carried between sessions instead of handed over. Offline and
             on-device: comparison runs on hashed 8-word shingles, and prompt
             and response text is never stored, printed, or sent
+  rules     List the waste rules that produce findings — what each measures,
+            which fire on your current window, and where its file lives. With a
+            rule key, print that rule's documentation. Each rule is one file in
+            src/rules/; adding one is the smallest useful contribution.
   html      Self-contained HTML dashboard (no server, no external assets)
   merge     Combine member exports (report --json > me.json) into a team
             report; clusters member task categories to flag the same task done
@@ -482,6 +488,35 @@ Signing fingerprint (send to your team lead for keys.json):
     const { rows, breach } = await reconcile(provider, events, days);
     console.log(renderReconcile(provider, rows, days));
     if (breach) process.exit(1);
+  } else if (cmd === 'rules') {
+    const days = Number(values.days) || 30;
+    // Firing state is a convenience, not a requirement: the catalogue must
+    // still print on a machine that has never run `collect`.
+    const events = loadEvents(db, { days });
+    const m = events.length > 0 ? computeMetrics(events) : undefined;
+    const key = positionals[1];
+    if (values.json) {
+      console.log(JSON.stringify(
+        RULES.map((r) => ({
+          key: r.key, title: r.title, metric: r.metric, direction: r.direction,
+          family: r.family ?? null, priced: Boolean(r.savings),
+          firing: m ? Boolean(r.fires(m)) : null,
+          docs: r.docs,
+        })).filter((r) => !key || r.key === key),
+        null, 2,
+      ));
+      return;
+    }
+    if (key) {
+      const rule = lookupRule(key);
+      if (!rule) {
+        console.error(`Unknown rule "${key}". Run \`token-monitor rules\` for the list.`);
+        process.exit(1);
+      }
+      console.log(renderRule(rule, m));
+    } else {
+      console.log(renderRules(m));
+    }
   } else if (cmd === 'html') {
     const days = Number(values.days) || 30;
     const { current: events, previous } = splitWindow(loadEvents(db, { days: days * 2 }), days);

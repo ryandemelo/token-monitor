@@ -185,6 +185,26 @@ test('e2e: report --trend renders the trend section (empty previous window)', ()
   assert.ok(stdout.includes('No events in the previous window'));
 });
 
+test('e2e: rules lists the catalogue, explains one rule, and rejects an unknown key', () => {
+  const list = run(['rules', ...DAYS]);
+  assert.equal(list.code, 0);
+  assert.ok(list.stdout.includes('Waste rules'));
+  assert.ok(list.stdout.includes('low-cache-hit'));
+  assert.ok(list.stdout.includes('tool-retry-loops'));
+
+  const one = run(['rules', 'high-rework', ...DAYS]);
+  assert.equal(one.code, 0);
+  assert.ok(one.stdout.includes('src/rules/high-rework.ts'));
+
+  const json = JSON.parse(run(['rules', '--json', ...DAYS]).stdout);
+  assert.equal(json.length, 8);
+  assert.ok(json.every((r: { key: string; docs: string }) => r.key && r.docs.length > 0));
+
+  const bad = run(['rules', 'no-such-rule', ...DAYS]);
+  assert.equal(bad.code, 1);
+  assert.ok(bad.stderr.includes('Unknown rule'));
+});
+
 test('e2e: html writes a self-contained dashboard', () => {
   const out = join(HOME, 'dash.html');
   const { code } = run(['html', '--out', out, ...DAYS]);

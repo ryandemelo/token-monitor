@@ -1,12 +1,17 @@
 import type { Metrics } from './metrics.js';
-import { computeMetrics, groupBy, contextGrowthOf, extendedCacheOpportunity, BLOAT_MIN_TURNS } from './metrics.js';
+import { computeMetrics, groupBy } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import type { Finding, FollowRow, MetricKey } from './followthrough.js';
-import { structuredFindings, premiumShare, fmtMetric } from './followthrough.js';
+import { structuredFindings, fmtMetric } from './followthrough.js';
 import { PRICES, PREMIUM_MODEL_RE } from './pricing.js';
-import { fmtTokens } from './report.js';
+import type { BlendedRates, RuleFamily, SessionInfo, Target } from './rules/types.js';
+import { RULE_BY_KEY, RULES } from './rules/index.js';
 import type { CauseBreakdown } from './causes.js';
 import { decomposeCause } from './causes.js';
+
+// The shapes rules are written against live with the rule contract; these
+// re-exports keep the existing `from './recommendations.js'` call sites working.
+export type { BlendedRates, SessionInfo, Target } from './rules/types.js';
 
 /**
  * Recommendations 2.0: every structured finding answers "why should I believe
@@ -39,34 +44,17 @@ export interface EnrichedRec extends Finding {
   cause?: CauseBreakdown;
 }
 
-/** Static fallback targets for the savings math, per finding key. */
-const TARGETS: Record<string, number> = {
-  'low-cache-hit': 0.8, // cache hit ratio to reach
-  'high-rework': 0.1, // rework ratio to reach
-  'premium-model-overuse': 0.5, // premium share to reach
-  'cold-restarts': 0.05, // cold-restart share to reach
-};
-
 /**
- * Session-skill metrics get personalized targets: with enough qualifying
- * sessions, the target is the top quartile of the user's OWN sessions —
- * "your best sessions prove this is reachable". Model-routing targets stay
- * static (model choice isn't a per-session skill).
+ * Sessions a personalized target is allowed to be computed from.
+ *
+ * "Your own best sessions prove this is reachable" is a claim about the user's
+ * conversations, and a subagent run reports 0 on the main-loop-scoped hygiene
+ * ratios by construction (its denominator is empty), so leaving runs in would
+ * drag every personal target to 0 and tell the user their top quartile already
+ * runs perfectly.
  */
-const PERSONAL_TARGET: Record<string, { metric: (m: Metrics) => number; direction: 'up' | 'down' }> = {
-  'low-cache-hit': { metric: (m) => m.cacheHitRatio, direction: 'up' },
-  'high-rework': { metric: (m) => m.reworkRatio, direction: 'down' },
-  'cold-restarts': { metric: (m) => m.coldRestartShare, direction: 'down' },
-};
-
 const PERSONAL_MIN_SESSIONS = 8;
 const PERSONAL_MIN_SPEND = 10_000; // ignore trivial sessions when benchmarking
-
-export interface Target {
-  value: number;
-  /** True when derived from the user's own top-quartile sessions. */
-  personal: boolean;
-}
 
 function quantile(sorted: number[], q: number): number {
   const pos = (sorted.length - 1) * q;
@@ -75,15 +63,17 @@ function quantile(sorted: number[], q: number): number {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
 }
 
+/**
+ * The improvement target a rule's savings are priced against: the user's own
+ * top-quartile sessions when the rule declares a personalized target and there
+ * is enough data, otherwise the rule's static target.
+ */
 export function targetFor(key: string, sessions: SessionInfo[]): Target | undefined {
-  const spec = PERSONAL_TARGET[key];
+  const rule = RULE_BY_KEY.get(key);
+  if (!rule) return undefined;
+  const spec = rule.personalTarget;
   if (spec) {
     const values = sessions
-      // "Your own best sessions prove this is reachable" is a claim about the
-      // user's conversations. A subagent run reports 0 on the main-loop-scoped
-      // hygiene ratios by construction (its denominator is empty), so leaving
-      // runs in would drag every personal target to 0 and tell the user their
-      // top quartile already runs perfectly.
       .filter((s) => !s.isSidechain && s.m.spendTokens >= PERSONAL_MIN_SPEND)
       .map((s) => spec.metric(s.m))
       .sort((a, b) => a - b);
@@ -92,44 +82,7 @@ export function targetFor(key: string, sessions: SessionInfo[]): Target | undefi
       return { value: quantile(values, spec.direction === 'up' ? 0.75 : 0.25), personal: true };
     }
   }
-  return key in TARGETS ? { value: TARGETS[key], personal: false } : undefined;
-}
-
-interface SessionInfo {
-  sessionId: string;
-  project: string;
-  date: string;
-  m: Metrics;
-  events: StoredEvent[];
-  /**
-   * One subagent run rather than a conversation. Context-bloat pricing and
-   * evidence skip these, because `contextBloatShare` — the metric that gates
-   * the finding — excludes them: scoring a fan-out here would bill the user
-   * for sessions the gate never counted and cite runs nobody can compact.
-   */
-  isSidechain: boolean;
-}
-
-/** $/token rates blended over the user's actual model mix in the window. */
-export interface BlendedRates {
-  input: number;
-  cacheRead: number;
-  /** Average realized $/spend-token across all priced usage. */
-  spend: number;
-  /** Realized $/spend-token on premium models only. */
-  premium: number;
-  /** Cheapest priced non-premium model the user already runs; tier-assumed when absent. */
-  cheap: number;
-  /**
-   * Blended $/token surcharge for writing to the 1-hour cache instead of the
-   * 5-minute one. Averaged over ONLY the models that publish both rates, so
-   * the two halves of the subtraction always describe the same population —
-   * blending the 5m rate over every model would let a vendor that doesn't
-   * bill cache writes at all drag it toward zero and inflate the premium.
-   * 0 when no model in the mix publishes an extended-tier price.
-   */
-  extendedWritePremium: number;
-  estimated: boolean;
+  return rule.target !== undefined ? { value: rule.target, personal: false } : undefined;
 }
 
 export function blendedRates(m: Metrics): BlendedRates {
@@ -179,128 +132,6 @@ export function blendedRates(m: Metrics): BlendedRates {
   };
 }
 
-/** Fresh tokens the late half of a bloated session paid beyond the early-half rate. */
-function bloatAvoidableTokens(events: StoredEvent[]): number {
-  if (events.length < BLOAT_MIN_TURNS) return 0;
-  const half = Math.floor(events.length / 2);
-  const fresh = (e: StoredEvent) => e.input_tokens + e.cache_creation_tokens;
-  const earlyFresh = events.slice(0, half).reduce((s, e) => s + fresh(e), 0);
-  const lateFresh = events.slice(events.length - half).reduce((s, e) => s + fresh(e), 0);
-  return Math.max(0, lateFresh - earlyFresh);
-}
-
-function premiumTokensOf(m: Metrics): number {
-  return Object.entries(m.byModel)
-    .filter(([name]) => PREMIUM_MODEL_RE.test(name))
-    .reduce((s, [, v]) => s + v.tokens, 0);
-}
-
-/** Per finding key: how bad is this session (higher = worse) and its evidence label. */
-const SCORERS: Record<string, (s: SessionInfo) => { score: number; label: string }> = {
-  'low-cache-hit': (s) => ({
-    score: s.m.inputTokens,
-    label: `cache ${(s.m.cacheHitRatio * 100).toFixed(0)}% · ${fmtTokens(s.m.inputTokens)} fresh input`,
-  }),
-  'high-rework': (s) => ({
-    score: s.m.reworkTokens,
-    label: `${fmtTokens(s.m.reworkTokens)} rework tok`,
-  }),
-  'low-think-code': (s) => ({
-    score: s.m.thinkToCodeRatio < 0.15 ? s.m.byActivity.coding.tokens : 0,
-    label: `think:code ${s.m.thinkToCodeRatio.toFixed(2)} · ${fmtTokens(s.m.byActivity.coding.tokens)} coding tok`,
-  }),
-  'premium-model-overuse': (s) => ({
-    score: premiumTokensOf(s.m),
-    label: `${fmtTokens(premiumTokensOf(s.m))} premium tok`,
-  }),
-  'context-bloat': (s) => {
-    const growth = contextGrowthOf(s.events);
-    return {
-      score: growth && growth.ratio >= 2 ? bloatAvoidableTokens(s.events) : 0,
-      label: `ctx ×${growth ? growth.ratio.toFixed(1) : '?'} · ${fmtTokens(bloatAvoidableTokens(s.events))} avoidable`,
-    };
-  },
-  'cold-restarts': (s) => ({
-    score: s.m.coldRestartTokens,
-    label: `${fmtTokens(s.m.coldRestartTokens)} re-paid after gaps`,
-  }),
-  'premium-misroute': (s) => ({
-    score: s.m.premiumWasteTokens,
-    label: `${fmtTokens(s.m.premiumWasteTokens)} premium on exploration/chat`,
-  }),
-  'tool-retry-loops': (s) => ({
-    score: s.m.retryTokens,
-    label: `${fmtTokens(s.m.retryTokens)} retry tok`,
-  }),
-};
-
-/** Estimated $ saved over the report window if the finding's metric hit its target. */
-function savingsUsd(
-  key: string,
-  m: Metrics,
-  rates: BlendedRates,
-  sessions: SessionInfo[],
-  target?: Target,
-): number | undefined {
-  const inputSide = m.cacheReadTokens + m.inputTokens + m.cacheCreationTokens;
-  switch (key) {
-    case 'low-cache-hit': {
-      // Tokens that would shift from fresh input to cache reads.
-      const moved = Math.max(0, (target?.value ?? 0) - m.cacheHitRatio) * inputSide;
-      return moved * (rates.input - rates.cacheRead);
-    }
-    case 'high-rework':
-      return Math.max(0, m.reworkRatio - (target?.value ?? 0)) * m.spendTokens * rates.spend;
-    case 'premium-model-overuse': {
-      const moved = Math.max(0, premiumShare(m) - (target?.value ?? 0)) * m.spendTokens;
-      return moved * Math.max(0, rates.premium - rates.cheap);
-    }
-    case 'premium-misroute':
-      return m.premiumWasteTokens * Math.max(0, rates.premium - rates.cheap);
-    case 'cold-restarts': {
-      // Price against the SAME population the ratio is measured over
-      // (main-loop fresh-paid input), or the number is inflated by the whole
-      // fan-out. Pre-0.13 exports have no base and no subagent rows either,
-      // so their own fresh-paid input is the right one.
-      const base = m.coldRestartBaseTokens ?? m.inputTokens + m.cacheCreationTokens;
-      const saved = Math.max(0, m.coldRestartShare - (target?.value ?? 0)) * base;
-      return saved * (rates.input - rates.cacheRead);
-    }
-    case 'context-bloat': {
-      const avoidable = sessions.reduce((s, info) => {
-        const g = info.isSidechain ? undefined : contextGrowthOf(info.events);
-        return g && g.ratio >= 2 ? s + bloatAvoidableTokens(info.events) : s;
-      }, 0);
-      // Conservative: avoided fresh context would have been cache reads at best.
-      return avoidable * (rates.input - rates.cacheRead);
-    }
-    case 'tool-retry-loops':
-      return m.retryTokens * rates.spend;
-    default:
-      return undefined; // e.g. low-think-code: an invest-more rec, not a savings one
-  }
-}
-
-/**
- * The other way to stop re-paying context: turn the 1-hour cache on. Priced
- * as a net — what the covered gaps would stop costing, minus the higher write
- * premium those sessions would start paying — and stated only when the net is
- * positive and material. Deliberately NOT folded into the finding's
- * `savingsUsdPerMonth`, which stays the "reach the target" number: two
- * different remedies with two different price tags, not one blended figure
- * nobody can reproduce.
- */
-function extendedCacheClause(events: StoredEvent[], rates: BlendedRates, monthly: number): string {
-  if (!rates.extendedWritePremium) return ''; // no model in the mix publishes an extended price
-  const { recoverableTokens, writeTokens, sessions } = extendedCacheOpportunity(events);
-  if (sessions === 0) return '';
-  const saved = recoverableTokens * (rates.input - rates.cacheRead);
-  const premium = writeTokens * rates.extendedWritePremium;
-  const net = (saved - premium) * monthly;
-  if (net < 1) return '';
-  return ` ${sessions} of these session(s) run on the 5-minute cache with gaps the 1-hour cache would have covered — enabling it nets about ${fmtUsdShort(net)}/mo after its higher write premium.`;
-}
-
 export function enrichFindings(events: StoredEvent[], m: Metrics, days: number): EnrichedRec[] {
   const findings = structuredFindings(m);
   if (findings.length === 0) return [];
@@ -317,24 +148,24 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
 
   return findings
     .map((f) => {
-      const scorer = SCORERS[f.key];
+      const rule = RULE_BY_KEY.get(f.key);
       // Evidence names sessions the user can go and change, so it ranks
       // conversations only. Subagent runs outnumber them ~14:1 and each turn
       // carries more absolute context, so leaving them in fills every "worst
       // 3 sessions" line with anonymous runs nobody can act on — their spend
       // is accounted for in the metric itself and in analyze's fan-out table.
-      const evidence = scorer
+      const evidence = rule?.score
         ? sessions
             .filter((s) => !s.isSidechain)
-            .map((s) => ({ s, ...scorer(s) }))
+            .map((s) => ({ s, ...rule.score!(s) }))
             .filter((x) => x.score > 0)
             .sort((a, b) => b.score - a.score)
             .slice(0, 3)
             .map(({ s, label }) => ({ sessionId: s.sessionId, project: s.project, date: s.date, label }))
         : [];
       const target = targetFor(f.key, sessions);
-      const extended = f.key === 'cold-restarts' ? extendedCacheClause(events, rates, monthly) : '';
-      const usd = savingsUsd(f.key, m, rates, sessions, target);
+      const extended = rule?.clause?.({ events, rates, monthly }) ?? '';
+      const usd = rule?.savings?.({ m, rates, sessions, target });
       const message =
         (target?.personal
           ? `${f.message} Your own top-quartile sessions already run at ${fmtMetric(f.metric, target.value)} — the target below assumes only that.`
@@ -355,14 +186,20 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
 
 /**
  * Per-rec savings overlap (misroute tokens are a subset of overuse tokens;
- * cold-restart tokens overlap the cache-hit gap). Group levers into families,
- * take the max within each, sum across — an honest combined number.
+ * cold-restart tokens overlap the cache-hit gap). Rules declare a `family`;
+ * within one we take the max and sum across families — an honest combined
+ * number. A rule with no family never contributes to the headline.
  */
-const FAMILIES: Array<{ family: string; keys: string[] }> = [
-  { family: 'caching', keys: ['low-cache-hit', 'cold-restarts', 'context-bloat'] },
-  { family: 'routing', keys: ['premium-model-overuse', 'premium-misroute'] },
-  { family: 'rework', keys: ['high-rework', 'tool-retry-loops'] },
-];
+function ruleFamilies(): Array<{ family: RuleFamily; keys: string[] }> {
+  const out = new Map<RuleFamily, string[]>();
+  for (const r of RULES) {
+    if (!r.family) continue;
+    const keys = out.get(r.family) ?? [];
+    keys.push(r.key);
+    out.set(r.family, keys);
+  }
+  return [...out].map(([family, keys]) => ({ family, keys }));
+}
 
 export interface PotentialBill {
   currentUsdPerMonth: number;
@@ -372,7 +209,7 @@ export interface PotentialBill {
 }
 
 export function potentialBill(recs: EnrichedRec[], m: Metrics, days: number): PotentialBill | undefined {
-  const families = FAMILIES.map(({ family, keys }) => ({
+  const families = ruleFamilies().map(({ family, keys }) => ({
     family,
     usdPerMonth: Math.max(
       0,
