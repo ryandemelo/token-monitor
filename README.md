@@ -233,6 +233,28 @@ Both context signals appear on the one-line summary in `report` and the dashboar
 
 **Privacy.** Tool and MCP server names are shown by `context` and stay on the machine. They can name a client, an internal system or a private endpoint, so — exactly like subagent type names — they never enter an export, a signed payload, or an `--llm` payload; the LLM payload's tool-error rows are redacted to `mcp:<tool>`. Connected servers are read from the local agent config by **key only**: a server's command, arguments and environment are never parsed or stored.
 
+## Seat value (subscription lens)
+
+Every dollar figure here is **API-equivalent** — what the same tokens would have cost at API rates. Most people run coding agents on a seat, where that number answers nothing on its own. `--plan` converts it:
+
+```sh
+token-monitor report --plan max-20x        # add --annual for annual-billing rates
+```
+
+```
+Seat value
+
+  API-equivalent ~$412/mo against a $200/mo Max 20x — ≈2.1× the seat price. The seat is returning well over what it costs.
+```
+
+Under-utilization gets the inverse framing (`≈0.3× — a lower tier may fit, if the headroom is not what you are paying for`), and a window under a week says so instead of quoting a ratio it can't support.
+
+The plan name rides along in `report --json` / `push` as a self-declared field, so a lead's `merge` shows seat value per member plus one org line — *"$1,240/mo of API-equivalent work on $600/mo of seats"*. Members who declare nothing show `—`; nobody is assumed onto the lead's tier.
+
+Prices live in [`src/plans.ts`](src/plans.ts), checked against claude.com/pricing on 2026-08-22 and meant to be edited to match your contract. Anything the public page doesn't state outright is marked and says why.
+
+**This is not a quota tracker.** Plan limits are multipliers over shifting baselines with their own windows, and nothing local can read them. Vendoring a guess would produce confident-looking wrong numbers, so the tool prices seats and stops there.
+
 ## Data completeness
 
 Agent tools rotate their logs — Claude Code deletes transcripts after `cleanupPeriodDays` (default 30) — so a window can be full of holes without anything saying so. Every report now opens with what it actually covers:
@@ -367,7 +389,7 @@ Org-skill candidates (team-wide)
 
 ```
 token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|copilot] [--db <path>]
-token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
+token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--plan <name>] [--annual] [--no-categories] [--db <path>]
 token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
 token-monitor context [--days 30] [--json] [--db <path>]

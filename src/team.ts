@@ -64,10 +64,18 @@ export interface ExportV1 {
    * apart from a genuinely quiet member.
    */
   coverage?: SourceCoverage[];
+  /**
+   * Self-declared subscription plan id (see plans.ts) — additive and optional
+   * on version 1, like `categories`. It is the ONLY new field the seat lens
+   * needs, it is a string the member chose from a fixed list, and no account
+   * data is read from anywhere to produce it.
+   */
+  plan?: string;
 }
 
-export function buildExport(events: StoredEvent[], days: number): ExportV1 {
+export function buildExport(events: StoredEvent[], days: number, opts: { plan?: string } = {}): ExportV1 {
   return {
+    ...(opts.plan ? { plan: opts.plan } : {}),
     version: 1,
     user: userInfo().username,
     host: hostname(),
