@@ -10,7 +10,6 @@ import toolRetryLoops from './tool-retry-loops.js';
 import toolResultBloat from './tool-result-bloat.js';
 import contextFloorCreep from './context-floor-creep.js';
 import abandonedWork from './abandoned-work.js';
-import sessionThrash from './session-thrash.js';
 import untestedCoding from './untested-coding.js';
 
 /**
@@ -36,7 +35,6 @@ export const RULES: Rule[] = [
   toolResultBloat,
   contextFloorCreep,
   abandonedWork,
-  sessionThrash,
   untestedCoding,
 ];
 
