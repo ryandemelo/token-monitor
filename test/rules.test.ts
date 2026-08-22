@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RULES, RULE_BY_KEY } from '../src/rules/index.js';
-import { computeMetrics } from '../src/metrics.js';
+import { computeMetrics, READ_FREE_CALLS } from '../src/metrics.js';
+import type { Metrics } from '../src/metrics.js';
 import { structuredFindings } from '../src/followthrough.js';
+import { mergeMetrics } from '../src/team.js';
 import { enrichFindings, targetFor } from '../src/recommendations.js';
 import { renderRules, renderRule } from '../src/report.js';
 import { makeStored } from './helpers.js';
@@ -68,6 +70,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'redundant-reads',
   ]);
 });
 
@@ -137,4 +140,126 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+// --- #89: redundant-reads. Exploration turns invoking a read-class tool past
+// READ_FREE_CALLS (3) uses of that tool in one main-loop session; the whole
+// turn's spend is priced, and the signal is a proxy (names, not arguments). ---
+
+/** One exploration turn running `tool` on `session` at minute `m`, 2k in / 1k out. */
+function readTurn(session: string, m: number, extra: Partial<StoredEvent> = {}): StoredEvent {
+  return makeStored({
+    session_id: session,
+    ts: `2026-06-01T03:${String(m % 60).padStart(2, '0')}:00.000Z`,
+    activity: 'exploration',
+    tools: '["read"]',
+    input_tokens: 2_000,
+    output_tokens: 1_000,
+    ...extra,
+  });
+}
+
+function codingTurn(session: string, m: number): StoredEvent {
+  return makeStored({
+    session_id: session,
+    ts: `2026-06-01T03:${String(m % 60).padStart(2, '0')}:30.000Z`,
+    activity: 'coding',
+    tools: '["edit"]',
+  });
+}
+
+test('redundant-reads: fires past the per-tool allowance and prices the carrying turns', () => {
+  const events: StoredEvent[] = [];
+  // Nine reads of the same tool interleaved with coding turns: the first 3
+  // are free research, the next 6 are repeats. The interleaving also keeps
+  // search-loop's unbroken-run shape out of the window.
+  for (let i = 0; i < 9; i++) {
+    events.push(readTurn('rereader', i * 2));
+    events.push(codingTurn('rereader', i * 2 + 1));
+  }
+
+  const m = computeMetrics(events);
+  assert.equal(m.redundantReadCalls, 9 - READ_FREE_CALLS);
+  assert.equal(m.redundantReadTurns, 6);
+  assert.equal(m.redundantReadTokens, 6 * 3_000);
+  assert.equal(m.redundantReadSessions, 1);
+  assert.equal(m.redundantReadShare, (6 * 3_000) / (9 * 3_000 + 9 * 200));
+
+  const rec = enrichFindings(events, m, 30).find((r) => r.key === 'redundant-reads');
+  assert.ok(rec, 'should fire at 6 repeat calls and a majority share');
+  assert.match(rec!.message, /6 repeat call\(s\) across 1 session\(s\)/);
+  assert.match(rec!.message, /arguments are not stored/, 'the proxy caveat is in the message itself');
+  assert.ok((rec.savingsUsdPerMonth ?? 0) > 0, 'repeat turns are priced');
+  assert.equal(rec.evidence[0]?.label, '6 repeat read call(s)');
+
+  // Independence from search-loop: same window, no unbroken run anywhere.
+  assert.equal(structuredFindings(m).some((f) => f.key === 'search-loop'), false);
+});
+
+test('redundant-reads: stays quiet under the allowance, on broad reading, and on subagents', () => {
+  const events: StoredEvent[] = [];
+  // Exactly the free allowance of two different tools: nothing to flag yet.
+  ['read', 'grep', 'read', 'grep', 'read', 'grep'].forEach((t, i) => {
+    events.push(readTurn('edge', i * 2, { tools: JSON.stringify([t]) }));
+    events.push(codingTurn('edge', i * 2 + 1));
+  });
+  // Broad reading: eight DIFFERENT read-class tools once each. Ten different
+  // files through eight tools look like work here, because names are all the
+  // transcript keeps, so this must stay silent.
+  const broad = ['webfetch', 'websearch', 'codebase_search', 'view', 'ls', 'glob', 'task', 'explore'];
+  broad.forEach((t, i) => {
+    events.push(readTurn('broad', 20 + i * 2, { tools: JSON.stringify([t]) }));
+    events.push(codingTurn('broad', 20 + i * 2 + 1));
+  });
+  // A pure sidechain burst re-running Read over and over: heavy unbroken
+  // reading is a subagent's job (see search-loop), never flagged here.
+  for (let i = 40; i < 55; i++) {
+    events.push(readTurn('fanout', i, { is_sidechain: 1, parent_session_id: 'main' }));
+  }
+
+  const m = computeMetrics(events);
+  assert.equal(m.redundantReadCalls, 0);
+  assert.equal(m.redundantReadTokens, 0);
+  assert.equal(m.redundantReadShare, 0);
+  assert.equal(structuredFindings(m).some((f) => f.key === 'redundant-reads'), false);
+});
+
+test('redundant-reads: the allowance boundary prices exactly the turns past it', () => {
+  const under = Array.from({ length: READ_FREE_CALLS }, (_, i) => readTurn('under', i));
+  const mu = computeMetrics(under);
+  assert.equal(mu.redundantReadCalls, 0);
+
+  // One more read tips the session: only that fourth turn carries spend.
+  const over = [...under, readTurn('under', 3)];
+  const mo = computeMetrics(over);
+  assert.equal(mo.redundantReadCalls, 1);
+  assert.equal(mo.redundantReadTurns, 1);
+  assert.equal(mo.redundantReadTokens, 3_000);
+});
+
+test('mergeMetrics recombines redundant-read counts over pooled spend, legacy exports included', () => {
+  const looperEvents: StoredEvent[] = [];
+  for (let i = 0; i < 9; i++) {
+    looperEvents.push(readTurn('looper', i * 2));
+    looperEvents.push(codingTurn('looper', i * 2 + 1));
+  }
+  const looper = computeMetrics(looperEvents);
+  const calm = computeMetrics([
+    makeStored({ session_id: 'calm', input_tokens: 1_000, output_tokens: 500 }),
+  ]);
+  const merged = mergeMetrics([looper, calm]);
+  assert.equal(merged.redundantReadCalls, looper.redundantReadCalls);
+  assert.equal(merged.redundantReadTokens, 6 * 3_000);
+  assert.equal(merged.redundantReadShare, (6 * 3_000) / (9 * 3_000 + 9 * 200 + 1_500));
+
+  // Pre-redundant-reads exports carry none of these fields, merge as zeros.
+  const legacy = { ...looper } as Partial<Metrics>;
+  delete legacy.redundantReadCalls;
+  delete legacy.redundantReadTurns;
+  delete legacy.redundantReadTokens;
+  delete legacy.redundantReadSessions;
+  delete legacy.redundantReadShare;
+  const withLegacy = mergeMetrics([legacy as Metrics, calm]);
+  assert.equal(withLegacy.redundantReadCalls, 0);
+  assert.equal(withLegacy.redundantReadShare, 0);
 });
