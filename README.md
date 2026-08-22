@@ -233,6 +233,27 @@ Both context signals appear on the one-line summary in `report` and the dashboar
 
 **Privacy.** Tool and MCP server names are shown by `context` and stay on the machine. They can name a client, an internal system or a private endpoint, so — exactly like subagent type names — they never enter an export, a signed payload, or an `--llm` payload; the LLM payload's tool-error rows are redacted to `mcp:<tool>`. Connected servers are read from the local agent config by **key only**: a server's command, arguments and environment are never parsed or stored.
 
+## Routing by task
+
+The `premium-misroute` finding is activity-level: premium tokens on reading and chat. The task-level version is sharper — *in this recurring category, your cheap-tier sessions show no worse outcomes than your premium ones* — and `categorize` reports it when the data supports it:
+
+```
+Routing by task (categories that ran on both tiers)
+
+  Category            Sessions  Premium  Cheap  Δ rework  Δ errors  Premium $  Verdict              If routed down
+  ──────────────────  ────────  ───────  ─────  ────────  ────────  ─────────  ───────────────────  ─────────────
+◦ deploy pipeline fix        6        3      3  +1pp      −2pp      $12.50     ≈ no measurable gap  ~$40/mo
+```
+
+Every knob is set toward silence, because the row argues with someone's judgement:
+
+- **Gates**: at least 6 sessions in the category and 2 on *each* tier. Below that, nothing is printed at all — a table of "not enough data" rows teaches people to skim past the rows that matter.
+- **Simpson's guard**: if the two tiers were used in different projects, that is a comparison of projects, not of tiers. The row is confined to a project where both appeared, and marked `◦` when it is.
+- **The verdict never overclaims**: "no measurable outcome gap in this category, on your data" — never "premium adds nothing". Within-category comparison reduces the *harder-tasks-go-to-the-premium-tier* bias; it does not remove it.
+- The savings figure overlaps `premium-misroute` and `premium-model-overuse`, so it is shown as per-category evidence and is **not** added to the report's headline potential.
+
+**One honest limitation.** The ±5pp noise band is a stated assumption, not a measurement. Calibrating it needs a corpus where the same recurring task ran on both tiers, and the maintainer's own machine runs 122.6M premium tokens against 0.04M non-premium — no two-tier population to measure against. The band is deliberately wider than the per-session spread on that corpus so ordinary variation cannot read as "no gap", and it lives in one constant in [`src/routing.ts`](src/routing.ts). If your data can calibrate it, that PR is very welcome.
+
 ## Skill ROI: did codifying it actually work?
 
 `categorize` ends every duplicate-work finding with the same advice — *codify it as a shared skill instead of re-deriving it*. This closes that loop.
