@@ -67,6 +67,8 @@ export interface Metrics {
   byActivity: Record<Activity, { tokens: number; share: number; events: number }>;
   byModel: Record<string, { tokens: number; costUsd: number }>;
   thinkToCodeRatio: number;
+  /** Testing tokens / (testing + coding) tokens, window-wide. Own tracked metric of untested-coding. */
+  testingShare: number;
   /** Sessions long enough (≥ BLOAT_MIN_TURNS) to measure a context trend. */
   trendSessions: number;
   /** Trend sessions whose late-half context grew ≥2× without cache keeping pace. */
@@ -477,6 +479,7 @@ export function computeMetrics(
     toolResultTurns,
     toolResultCarryTokens: carryTokens,
     toolResultCarryShare: inputSide ? carryTokens / inputSide : 0,
+    testingShare: byActivity.testing.tokens / (byActivity.testing.tokens + byActivity.coding.tokens || 1),
     sessionFloorTokens: floorTokens,
     floorSessions: floors.length,
     floorTurns,

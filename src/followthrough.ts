@@ -29,7 +29,8 @@ export type MetricKey =
   | 'toolResultCarryShare'
   | 'floorShare'
   | 'shippedShare'
-  | 'abandonedShare';
+  | 'abandonedShare'
+  | 'testingShare';
 
 export { premiumShare };
 
@@ -56,6 +57,7 @@ export const METRIC_DIRECTION: Record<MetricKey, 'up' | 'down'> = {
   floorShare: 'down',
   shippedShare: 'up',
   abandonedShare: 'down',
+  testingShare: 'up',
 };
 
 /**

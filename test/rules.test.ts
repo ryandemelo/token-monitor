@@ -68,6 +68,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'untested-coding',
   ]);
 });
 
@@ -137,4 +138,30 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+test('untested-coding: flags coding-heavy projects with no test turns; spend excludes cache creation', async () => {
+  const events: StoredEvent[] = [
+    makeStored({ session_id: 'a1', project: 'proj-a', activity: 'coding', input_tokens: 150_000, output_tokens: 0 }),
+    makeStored({ session_id: 'a2', project: 'proj-a', activity: 'coding', input_tokens: 150_000, output_tokens: 0 }),
+    makeStored({ session_id: 'b1', project: 'proj-b', activity: 'coding', input_tokens: 200_000 }),
+    makeStored({ session_id: 'b2', project: 'proj-b', activity: 'testing', input_tokens: 30_000 }),
+    makeStored({ session_id: 'c1', project: 'proj-c', activity: 'coding', input_tokens: 5_000 }),
+  ];
+  const rule = RULE_BY_KEY.get('untested-coding')!;
+  assert.ok(rule, 'rule registered');
+
+  const clause = rule.clause!({ events, rates: {
+    input: 0, cacheRead: 0, spend: 0, premium: 0, cheap: 0, extendedWritePremium: 0, estimated: false,
+  }, monthly: 1 });
+  assert.match(clause, /proj-a/);
+  assert.doesNotMatch(clause, /proj-b/);
+  assert.doesNotMatch(clause, /proj-c/);
+
+  const evsA = events.filter((e) => e.project === 'proj-a');
+  const s = { sessionId: 'a1', project: 'proj-a', date: '2026-06-01', m: computeMetrics(evsA), events: evsA, isSidechain: false };
+  assert.ok(rule.score!(s).score > 0);
+
+  const mAll = computeMetrics(events);
+  assert.equal(typeof mAll.testingShare, 'number');
 });

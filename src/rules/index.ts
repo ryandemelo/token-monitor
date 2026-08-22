@@ -10,6 +10,8 @@ import toolRetryLoops from './tool-retry-loops.js';
 import toolResultBloat from './tool-result-bloat.js';
 import contextFloorCreep from './context-floor-creep.js';
 import abandonedWork from './abandoned-work.js';
+import sessionThrash from './session-thrash.js';
+import untestedCoding from './untested-coding.js';
 
 /**
  * The rule registry.
@@ -34,6 +36,8 @@ export const RULES: Rule[] = [
   toolResultBloat,
   contextFloorCreep,
   abandonedWork,
+  sessionThrash,
+  untestedCoding,
 ];
 
 export const RULE_BY_KEY: Map<string, Rule> = new Map(RULES.map((r) => [r.key, r]));
