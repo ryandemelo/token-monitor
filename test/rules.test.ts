@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RULES, RULE_BY_KEY } from '../src/rules/index.js';
-import { computeMetrics } from '../src/metrics.js';
+import { computeMetrics, MEGA_TURN_FLOOR_TOKENS } from '../src/metrics.js';
+import type { Metrics } from '../src/metrics.js';
 import { structuredFindings } from '../src/followthrough.js';
 import { enrichFindings, targetFor } from '../src/recommendations.js';
+import { mergeMetrics } from '../src/team.js';
 import { renderRules, renderRule } from '../src/report.js';
 import { makeStored } from './helpers.js';
 import { readdirSync } from 'node:fs';
@@ -65,6 +67,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'cold-restarts',
     'premium-misroute',
     'tool-retry-loops',
+    'mega-turns',
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
@@ -137,4 +140,101 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+// --- #91: mega-turns. The bar is max(20k floor, p99.9 of the window's own
+// turns); savings price only the excess above it. -------------------------
+
+test('mega-turns: fires on a single runaway turn, and prices nothing it cannot defend', () => {
+  const events = [
+    makeStored({ session_id: 'calm', input_tokens: 1_000, output_tokens: 500 }),
+    makeStored({
+      session_id: 'burst', ts: '2026-06-01T01:00:00.000Z',
+      input_tokens: 30_000, output_tokens: 21_000,
+    }),
+  ];
+  const m = computeMetrics(events);
+  assert.equal(m.megaTurns, 1);
+  // A two-turn window has no tail to speak of: p99.9 IS the largest turn, so
+  // the bar lands exactly on it and there is nothing above it to price.
+  assert.equal(m.megaTurnThreshold, 21_000);
+  assert.equal(m.megaTurnExcessTokens, 0);
+  assert.ok(structuredFindings(m).some((f) => f.key === 'mega-turns'));
+  const rec = enrichFindings(events, m, 30).find((r) => r.key === 'mega-turns');
+  assert.ok(rec, 'mega-turns should fire on a 21k-output turn');
+  assert.match(rec!.message, /1 turn\(s\) emitted 21\.0k\+ output tokens/);
+  // Excess-only savings: with nothing above the bar, the rec stays unpriced
+  // rather than inventing a number.
+  assert.equal(rec!.savingsUsdPerMonth, undefined);
+});
+
+test('mega-turns: prices the excess above the bar in a large window and names the worst turn', () => {
+  const events: StoredEvent[] = [];
+  for (let i = 0; i < 10_000; i++) {
+    events.push(makeStored({
+      session_id: 'grind',
+      ts: `2026-06-01T${String(Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor((i % 3600) / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`,
+      input_tokens: 2_000, output_tokens: 100,
+    }));
+  }
+  for (let i = 0; i < 3; i++) {
+    events.push(makeStored({
+      session_id: `burst${i}`, ts: `2026-06-0${i + 2}T05:00:00.000Z`,
+      input_tokens: 40_000, output_tokens: 30_000,
+    }));
+  }
+  const m = computeMetrics(events);
+  // Three outliers in 10_003 turns sit below the 99.9th percentile, so the
+  // bar is the absolute floor, not the outliers themselves.
+  assert.equal(m.megaTurnThreshold, MEGA_TURN_FLOOR_TOKENS);
+  assert.equal(m.megaTurns, 3);
+  assert.equal(m.largestTurnOutput, 30_000);
+  assert.equal(m.megaTurnExcessTokens, 3 * 10_000);
+  assert.equal(m.megaTurnTokens, 3 * 70_000);
+  const rec = enrichFindings(events, m, 30).find((r) => r.key === 'mega-turns')!;
+  assert.ok(rec, 'mega-turns should fire');
+  assert.ok((rec.savingsUsdPerMonth ?? 0) > 0, 'excess above the bar is priced');
+  assert.equal(rec.evidence[0]?.label, '30.0k tok single turn');
+  assert.ok(rec.evidence.every((e) => e.sessionId.startsWith('burst')), 'evidence ranks the mega sessions first');
+});
+
+test('mega-turns: stays quiet on ordinary windows, escalates the bar for heavy writers', () => {
+  const calm = [
+    makeStored({ output_tokens: 800 }),
+    makeStored({ ts: '2026-06-01T00:01:00.000Z', output_tokens: 1_200 }),
+  ];
+  const mCalm = computeMetrics(calm);
+  assert.equal(mCalm.megaTurns, 0);
+  assert.equal(structuredFindings(mCalm).some((f) => f.key === 'mega-turns'), false);
+
+  // A user whose every turn legitimately writes 25k sets their own bar: the
+  // percentile escalates past the floor, so nothing is flagged as excess.
+  const heavy = Array.from({ length: 400 }, (_, i) =>
+    makeStored({ ts: `2026-06-01T${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`, output_tokens: 25_000 }));
+  const mHeavy = computeMetrics(heavy);
+  assert.equal(mHeavy.megaTurnThreshold, 25_000);
+  assert.equal(mHeavy.megaTurns, 400);
+  assert.equal(mHeavy.megaTurnExcessTokens, 0);
+});
+
+test('mergeMetrics recombines mega-turn counts over pooled spend, legacy exports included', () => {
+  const burst = computeMetrics([
+    makeStored({ session_id: 'burst', input_tokens: 40_000, output_tokens: 30_000 }),
+  ]);
+  const grind = computeMetrics([
+    makeStored({ session_id: 'grind', input_tokens: 2_000, output_tokens: 100 }),
+    makeStored({ ts: '2026-06-01T00:01:00.000Z', session_id: 'grind', input_tokens: 2_000, output_tokens: 100 }),
+  ]);
+  const merged = mergeMetrics([burst, grind]);
+  assert.equal(merged.megaTurns, 1);
+  assert.equal(merged.megaTurnTokens, 70_000);
+  assert.equal(merged.megaTurnShare, 70_000 / (70_000 + 4_200));
+  assert.equal(merged.megaTurnThreshold, Math.max(burst.megaTurnThreshold, grind.megaTurnThreshold));
+  // Pre-0.15 exports carry none of these fields and must merge as zeros.
+  const legacy = { ...burst } as Partial<Metrics>;
+  delete legacy.megaTurns; delete legacy.megaTurnTokens; delete legacy.megaTurnShare;
+  delete legacy.largestTurnOutput; delete legacy.megaTurnExcessTokens; delete legacy.megaTurnThreshold;
+  const withLegacy = mergeMetrics([legacy as Metrics, grind]);
+  assert.equal(withLegacy.megaTurns, 0);
+  assert.equal(withLegacy.megaTurnShare, 0);
 });
