@@ -311,7 +311,7 @@ test('e2e: rules lists the catalogue, explains one rule, and rejects an unknown 
   assert.ok(one.stdout.includes('src/rules/high-rework.ts'));
 
   const json = JSON.parse(run(['rules', '--json', ...DAYS]).stdout);
-  assert.equal(json.length, 11);
+  assert.equal(json.length, 12);
   assert.ok(json.every((r: { key: string; docs: string }) => r.key && r.docs.length > 0));
 
   const bad = run(['rules', 'no-such-rule', ...DAYS]);

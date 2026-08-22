@@ -214,6 +214,8 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     coldRestartTurns: 0, coldRestartTokens: 0, coldRestartShare: 0, coldRestartBaseTokens: 0,
     premiumWasteTokens: 0, premiumWasteShare: 0,
     retryTokens: 0, retryShare: 0,
+    megaTurns: 0, megaTurnTokens: 0, megaTurnShare: 0,
+    largestTurnOutput: 0, megaTurnExcessTokens: 0, megaTurnThreshold: 0,
     subagentSessions: 0, subagentSpendTokens: 0, subagentShare: 0,
     extendedCacheTokens: 0, extendedCacheShare: 0, extendedCacheSessions: 0,
     toolResultTokens: 0, toolResultTurns: 0,
@@ -247,6 +249,15 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.coldRestartBaseTokens += m.coldRestartBaseTokens ?? (m.inputTokens + m.cacheCreationTokens);
     out.premiumWasteTokens += m.premiumWasteTokens ?? 0;
     out.retryTokens += m.retryTokens ?? 0;
+    out.megaTurns += m.megaTurns ?? 0;
+    out.megaTurnTokens += m.megaTurnTokens ?? 0;
+    out.megaTurnExcessTokens += m.megaTurnExcessTokens ?? 0;
+    // Counts and tokens add across members, but each member counted against
+    // its OWN bar (percentile of its own turns), so the merged threshold is
+    // reported as the strictest bar any member used. The share below is the
+    // honest recombination over pooled spend.
+    out.largestTurnOutput = Math.max(out.largestTurnOutput, m.largestTurnOutput ?? 0);
+    out.megaTurnThreshold = Math.max(out.megaTurnThreshold, m.megaTurnThreshold ?? 0);
     out.subagentSessions += m.subagentSessions ?? 0;
     out.subagentSpendTokens += m.subagentSpendTokens ?? 0;
     out.extendedCacheTokens += m.extendedCacheTokens ?? 0;
@@ -294,6 +305,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     : 0;
   out.premiumWasteShare = out.spendTokens ? out.premiumWasteTokens / out.spendTokens : 0;
   out.retryShare = out.spendTokens ? out.retryTokens / out.spendTokens : 0;
+  out.megaTurnShare = out.spendTokens ? out.megaTurnTokens / out.spendTokens : 0;
   // Pre-0.13 exports carry no subagent fields at all, so a team share is a
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;

@@ -36,6 +36,16 @@ export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
 export const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
 
 /**
+ * The absolute floor of the mega-turn bar (#91). A turn emitting more OUTPUT
+ * than this is examined however small its window, because no ordinary request
+ * writes 20k tokens of output by accident. On windows whose own distribution
+ * sits higher, the bar escalates to the 99.9th percentile of the window's
+ * turns (see computeMetrics): a user whose models legitimately write long
+ * files sets their own bar rather than being accused for it.
+ */
+export const MEGA_TURN_FLOOR_TOKENS = 20_000;
+
+/**
  * The conversation a turn belongs to from the user's point of view: a subagent
  * run counts under the session that spawned it, everything else under itself.
  * `sessions` counts these, so a fan-out of 40 agents stays ONE session in the
@@ -92,6 +102,28 @@ export interface Metrics {
   /** Tokens on turns re-running a tool that errored in the immediately previous turn. */
   retryTokens: number;
   retryShare: number;
+  /**
+   * Mega-turns (#91): turns whose output alone cleared this window's bar,
+   * max(MEGA_TURN_FLOOR_TOKENS, p99.9 of the window's turn outputs), so the
+   * bar is derived from the user's own data rather than a magic constant.
+   * `megaTurnTokens` counts their full spend (input + output); `megaTurnShare`
+   * puts that over all spend. Subagent runs count like any other turn: their
+   * output is as real, and a runaway generation inside a fan-out is exactly
+   * as worth naming.
+   */
+  megaTurns: number;
+  megaTurnTokens: number;
+  megaTurnShare: number;
+  /** Output of the single largest turn in the window (the evidence label). */
+  largestTurnOutput: number;
+  /**
+   * Output above the bar, summed over mega-turns: the only part the savings
+   * estimate prices. Everything up to the bar is treated as legitimate work,
+   * which keeps the number conservative and easy to defend.
+   */
+  megaTurnExcessTokens: number;
+  /** The bar this window was measured against (carried so reports can name it). */
+  megaTurnThreshold: number;
   /**
    * Cache-write tokens on the 1-hour ephemeral tier, and their share of all
    * cache writes — main loop AND subagent runs, which routinely sit on
@@ -343,6 +375,7 @@ export function computeMetrics(
   let trendSessions = 0, bloatedSessions = 0;
   let coldRestartTurns = 0, coldRestartTokens = 0;
   let retryTokens = 0;
+  let megaTurns = 0, megaTurnTokens = 0, megaTurnExcessTokens = 0, largestTurnOutput = 0;
   let carryTokens = 0;
   let floorTurns = 0, floorBaseTokens = 0;
   const floors: number[] = [];
@@ -433,6 +466,26 @@ export function computeMetrics(
     }
   }
 
+  // Mega-turn bar (#91): percentile of THIS window's turns over an absolute
+  // floor, then one pass to count, sum spend, and keep the excess above the
+  // bar for pricing. Window-level on purpose: a per-session percentile would
+  // let one quiet session set a low bar and fire on a routine big write.
+  const sortedOutputs = events.map((e) => e.output_tokens).sort((a, b) => a - b);
+  const p999 = sortedOutputs.length
+    ? sortedOutputs[Math.min(sortedOutputs.length - 1, Math.floor(sortedOutputs.length * 0.999))]
+    : 0;
+  const megaTurnThreshold = Math.max(MEGA_TURN_FLOOR_TOKENS, p999);
+  if (megaTurnThreshold > 0) {
+    for (const e of events) {
+      if (e.output_tokens > largestTurnOutput) largestTurnOutput = e.output_tokens;
+      if (e.output_tokens >= megaTurnThreshold) {
+        megaTurns++;
+        megaTurnTokens += e.input_tokens + e.output_tokens;
+        megaTurnExcessTokens += e.output_tokens - megaTurnThreshold;
+      }
+    }
+  }
+
   const codingTokens = byActivity.coding.tokens || 1;
   const inputSide = input + cacheRead + cacheCreate;
   const outcomes = computeOutcomes(events, opts);
@@ -467,6 +520,12 @@ export function computeMetrics(
     premiumWasteShare: spendTokens ? premiumWasteTokens / spendTokens : 0,
     retryTokens,
     retryShare: spendTokens ? retryTokens / spendTokens : 0,
+    megaTurns,
+    megaTurnTokens,
+    megaTurnShare: spendTokens ? megaTurnTokens / spendTokens : 0,
+    largestTurnOutput,
+    megaTurnExcessTokens,
+    megaTurnThreshold,
     extendedCacheTokens,
     extendedCacheShare: cacheCreate ? extendedCacheTokens / cacheCreate : 0,
     extendedCacheSessions,
