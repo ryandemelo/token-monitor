@@ -34,6 +34,25 @@ export function norm(name: string): string {
 }
 
 /**
+ * Which class of tool this is, by normalized name. Exported because the
+ * classifier is not the only thing that needs it: `donate-fixture` renames MCP
+ * tools, and a rename that moved a tool from one class to another would change
+ * the donated session's activity mix — the fixture has to re-classify to what
+ * the original was.
+ */
+export type ToolClass = 'read' | 'write' | 'shell' | 'plan' | 'interactive' | 'other';
+
+export function toolClass(name: string): ToolClass {
+  const t = norm(name);
+  if (WRITE_TOOLS.has(t)) return 'write';
+  if (PLAN_TOOLS.has(t)) return 'plan';
+  if (INTERACTIVE_TOOLS.has(t)) return 'interactive';
+  if (READ_TOOLS.has(t)) return 'read';
+  if (SHELL_TOOLS.has(t)) return 'shell';
+  return 'other';
+}
+
+/**
  * Classify a turn by what its tool calls did. Priority order matters:
  * shipping/testing are detected from shell commands, coding from write
  * tools, planning from plan tools, exploration from read-only tools.

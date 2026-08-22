@@ -384,7 +384,7 @@ export function syncIntentProjects(db: DatabaseSync): number {
 
 export function loadEvents(
   db: DatabaseSync,
-  opts: { days?: number; project?: string; source?: string } = {},
+  opts: { days?: number; project?: string; source?: string; session?: string } = {},
 ): StoredEvent[] {
   const where: string[] = [];
   const params: (string | number)[] = [];
@@ -400,6 +400,10 @@ export function loadEvents(
     where.push(`source = ?`);
     params.push(opts.source);
   }
+  if (opts.session) {
+    where.push(`session_id = ?`);
+    params.push(opts.session);
+  }
   // Subagent columns are selected defensively: a DB whose migration couldn't
   // run (read-only, older binary holding it) must still read, and the defaults
   // it substitutes are the truth for pre-subagent rows anyway.
@@ -414,6 +418,21 @@ export function loadEvents(
       ${col('cache_creation_1h_tokens', '0')}, ${col('tool_result_chars', 'NULL')}
     FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ts`;
   return db.prepare(sql).all(...params) as unknown as StoredEvent[];
+}
+
+/**
+ * Session ids starting with `prefix`, newest activity first. `donate-fixture`
+ * takes the 8-character prefix the report prints as evidence, so it has to be
+ * able to resolve one — and to refuse when a prefix is ambiguous rather than
+ * picking a session the user did not mean.
+ */
+export function findSessions(db: DatabaseSync, prefix: string): Array<{ session_id: string; project: string; source: string; turns: number; last_ts: string }> {
+  return db
+    .prepare(
+      `SELECT session_id, project, source, COUNT(*) AS turns, MAX(ts) AS last_ts
+         FROM events WHERE session_id LIKE ? GROUP BY session_id ORDER BY last_ts DESC`,
+    )
+    .all(prefix + '%') as unknown as Array<{ session_id: string; project: string; source: string; turns: number; last_ts: string }>;
 }
 
 /**

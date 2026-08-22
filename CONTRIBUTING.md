@@ -55,6 +55,17 @@ Four rules to write by:
 3. **Ship the caveat with the rule.** If your signal is a proxy (tool arguments aren't stored; a source doesn't report thinking tokens), the message says so. Sources that can't measure something report *nothing*, not zero.
 4. **Justify thresholds against real data in the PR.** Persona and cluster thresholds set the precedent: a number you picked because it looked round is a number nobody can defend later.
 
+### Getting data to write it against
+
+`makeStored` builds synthetic turns by hand, which is enough for most rules. When you need the shape of *real* work — a fix loop, a fan-out, a session that bloats — donate one of your own sessions:
+
+```sh
+token-monitor report                       # session ids appear as recommendation evidence
+token-monitor donate-fixture <id-prefix>   # -> test/fixtures/donated/
+```
+
+The generator reads the **database**, not your transcripts, and the database has no column that can hold prompt or code text. What survives is what rules measure: turn count, timing, token counts, models, tool names, error flags, result sizes and the subagent structure. Projects and branches are renamed, MCP tool names are replaced (keeping their classifier class so the session's activity mix survives the round trip), and timestamps are shifted to a fixed start with every gap preserved. Read the files before you attach them to a PR anyway — the tool's privacy claims should not be the only thing between your session and a public repo.
+
 Then a test in `test/rules.test.ts` (or its own file) with a synthetic window from `makeStored`: one case where it fires, one where it must stay silent, and — if it prices savings — one asserting the arithmetic. `npm test` must pass.
 
 If your new rule needs a metric that doesn't exist yet, add it to `Metrics` in `src/metrics.ts` and to the `MetricKey` union in `src/followthrough.ts` so follow-through can track whether the advice worked.

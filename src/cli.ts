@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ADAPTERS } from './adapters/index.js';
 import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
@@ -20,6 +21,7 @@ import { enrichFindings } from './recommendations.js';
 import { reconcile, renderReconcile, PROVIDERS } from './reconcile.js';
 import { computeMetrics } from './metrics.js';
 import { computeToolSurface } from './tool-surface.js';
+import { buildDonation, writeDonation, resolveSession } from './donate.js';
 import { blendedRates } from './recommendations.js';
 import { renderHtml, renderTeamHtml, renderCategorizeHtml } from './html.js';
 import { renderAnalysis, deepAnalysis, buildLlmPrompt, buildLlmTrackPrompt, runLlm, runLlmCapture, parseLlmFindings, renderTrackedLlm, detectAgent } from './analyze.js';
@@ -38,6 +40,7 @@ Usage:
   token-monitor analyze [--days <n>] [--llm] [--track] [--agent claude|gemini|codex] [--json] [--db <path>]
   token-monitor relay   [--days <n>] [--threshold <0-1>] [--source <name>] [--json] [--db <path>]
   token-monitor context [--days <n>] [--json] [--db <path>]
+  token-monitor donate-fixture <session-id-or-prefix> [--out <dir>] [--db <path>]
   token-monitor rules   [<rule-key>] [--days <n>] [--json] [--db <path>]
   token-monitor html    [--out report.html] [--days <n>] [--db <path>]
   token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline]
@@ -68,6 +71,14 @@ Commands:
             turn re-reads, the tool results still riding along in it, per-MCP-
             server spend, and connected servers nothing ever invoked. Server
             and tool names are shown locally and never leave the machine.
+  donate-fixture
+            Turn one of your sessions into a SYNTHETIC transcript that can be
+            committed as a test fixture: same turn count, timing, token counts,
+            models, tool names, error flags and fan-out shape; no prompt or code
+            content (the database has no column that can hold any), projects and
+            branches renamed, MCP tool names replaced, timestamps shifted to a
+            fixed start with every gap preserved. Read the file before attaching
+            it to a PR.
   rules     List the waste rules that produce findings — what each measures,
             which fire on your current window, and where its file lives. With a
             rule key, print that rule's documentation. Each rule is one file in
@@ -495,6 +506,30 @@ Signing fingerprint (send to your team lead for keys.json):
     const { rows, breach } = await reconcile(provider, events, days);
     console.log(renderReconcile(provider, rows, days));
     if (breach) process.exit(1);
+  } else if (cmd === 'donate-fixture') {
+    const wanted = positionals[1];
+    if (!wanted) {
+      console.error('donate-fixture needs a session id or prefix (report prints them as evidence: "worst: db0a7d17 (…)").');
+      process.exit(1);
+    }
+    let sessionId: string;
+    try {
+      sessionId = resolveSession(db, wanted);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    const outDir = values.out && values.out !== 'report.html' ? values.out : join('test', 'fixtures', 'donated');
+    const { files, result } = buildDonation(db, sessionId);
+    writeDonation(outDir, files);
+    const shown = result.files.slice(0, 5);
+    console.log(
+      `Wrote ${result.files.length} file(s), ${(result.bytes / 1024).toFixed(0)} KB, under ${outDir}:\n` +
+        [...shown, ...(result.files.length > shown.length ? [`… ${result.files.length - shown.length} more`] : [])]
+          .map((f) => `  ${f}`).join('\n') +
+        `\n\n${result.turns} main-loop turn(s), ${result.agentRuns} subagent run(s). Projects, branches and MCP names are synthetic; timestamps shifted by ${Math.round(result.shiftMs / 86_400_000)}d with gaps preserved.\n` +
+        'Read the files before attaching them to a PR — the tool\'s privacy claims should not be the only thing between your session and a public repo.',
+    );
   } else if (cmd === 'context') {
     const days = Number(values.days) || 30;
     const events = loadEvents(db, { days, project: values.project, source: values.source });
