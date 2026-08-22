@@ -45,6 +45,14 @@ interface ClaudeLine {
   agentId?: string;
   attributionAgent?: string;
   /**
+   * Agent Skill attributed to this line. Present on assistant lines while a
+   * skill is active — every turn of the run carries it, not just the first.
+   * (`<command-name>` markers exist too but are dominated by built-ins like
+   * /effort, /model and /compact, so they are deliberately NOT read as skill
+   * invocations — see skills.ts.)
+   */
+  attributionSkill?: string;
+  /**
    * Current Claude Code writes this false on every main-loop line and true in
    * agent files. Older versions inlined sidechain turns into the main
    * transcript with this flag set; honouring it keeps those turns out of the
@@ -235,6 +243,7 @@ function parseTranscript(text: string, opts: TranscriptOpts, prKeys?: PrKeysBySe
       hasThinking,
       isError: false,
       gitBranch: d.gitBranch,
+      skill: typeof d.attributionSkill === 'string' && d.attributionSkill ? d.attributionSkill : undefined,
       // A subagent's "user" prompt is written by the parent agent, not by the
       // human, so it is deliberately NOT carried as intent text: feeding
       // machine-authored task briefs into categorize would drown the handful

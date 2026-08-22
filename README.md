@@ -233,6 +233,35 @@ Both context signals appear on the one-line summary in `report` and the dashboar
 
 **Privacy.** Tool and MCP server names are shown by `context` and stay on the machine. They can name a client, an internal system or a private endpoint, so — exactly like subagent type names — they never enter an export, a signed payload, or an `--llm` payload; the LLM payload's tool-error rows are redacted to `mcp:<tool>`. Connected servers are read from the local agent config by **key only**: a server's command, arguments and environment are never parsed or stored.
 
+## Skill ROI: did codifying it actually work?
+
+`categorize` ends every duplicate-work finding with the same advice — *codify it as a shared skill instead of re-deriving it*. This closes that loop.
+
+```
+Skill adoption
+
+  Skill            Sessions  Turns  First seen  Last used
+  ───────────────  ────────  ─────  ──────────  ──────────
+  invoice-helper         43   2976  2026-08-08  2026-08-22
+
+  ⚠ 1 skill(s) used historically but not once in this window: old-thing
+
+Did codifying it work? (category recurrence before → after the skill)
+
+  Skill           Category            Link   Before/30d  After/30d  Realized    Status
+  ──────────────  ──────────────────  ─────  ──────────  ─────────  ──────────  ───────────
+  invoice-helper  invoice ledger …    map    4.2         1.1        ~$310/mo    ✅ realized
+```
+
+Two things it refuses to do, both learned from running it on real data:
+
+- **A name match is a candidate, not a cause.** Automatic links show the before/after numbers and **never** a dollar figure — nothing in the transcripts says a skill was written to absorb a category's work. You assert that in `~/.token-monitor/skill-map.json` (`{"category name": "skill"}`), and only a mapped link unlocks the estimate. The first version linked on any shared word and confidently priced a `code-review` skill against three unrelated categories.
+- **Slash-command markers are not skill invocations.** They exist in the transcripts and are dominated by built-ins — `/effort`, `/model`, `/compact`. Reading them as skills would report `/compact` as your most-adopted skill. Only the harness's own skill attribution is used.
+
+Even a mapped link needs recurrence to have *fallen*, the skill to have been *used* in the window, and at least three sessions before it appeared. A category can also fade because a project ended — this is correlation, and the figure is the recurrence delta times the category's average session cost.
+
+Attribution marks **turns**, not invocations: one use of a skill attributes every turn it stays active for, so sessions are the adoption number and turns are the volume. Only Claude Code records this today; other sources report nothing rather than zero. **Skill names are local display only** — never exported, signed, or sent to an LLM.
+
 ## Outcomes: what the tokens bought
 
 Every other metric here is denominator-less. Outcomes add the missing half:

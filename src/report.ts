@@ -14,6 +14,7 @@ import { trendRows, verdictOf, fmtTrendValue, projectMovers } from './trends.js'
 import type { SourceCoverage } from './coverage.js';
 import { computeCoverage, fmtCoverage, readRetentionDays, retentionNote, trendIsComparable } from './coverage.js';
 import type { CategorizeResult, CategorizeSummary } from './categorize.js';
+import { ROI_MIN_BEFORE_SESSIONS } from './skills.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
 import type { RelayResult, RelaySummary } from './relay-scan.js';
@@ -391,10 +392,86 @@ export function renderCategorize(r: CategorizeResult, days: number): string {
     );
   }
 
+  out.push(...renderSkillAdoption(r));
+
   out.push(
     `\n  ${DIM}Labels are derived on-device from redacted prompts; raw prompt text is never stored.${RESET}\n`,
   );
   return out.join('\n');
+}
+
+const ROI_STATUS: Record<string, string> = {
+  realized: '✅ realized',
+  tracking: '— tracking',
+  'no-change': '— no change yet',
+  'insufficient-history': '— needs more history',
+};
+
+/**
+ * Skill adoption and ROI. Answers the question `categorize` has been asking
+ * users to act on for three releases — "codify it as a shared skill" — and
+ * whether doing so actually killed the duplicate work.
+ *
+ * Skill names appear here and nowhere else: local terminal only.
+ */
+export function renderSkillAdoption(r: CategorizeResult): string[] {
+  const out: string[] = [];
+  const skills = r.skills;
+  if (!skills || skills.unmeasured) return out;
+
+  out.push(section('Skill adoption'));
+  const active = skills.usage.filter((u) => !u.dormant);
+  const dormant = skills.usage.filter((u) => u.dormant);
+  if (active.length === 0 && dormant.length === 0) {
+    out.push(`  ${DIM}No skill invocations recorded. Only Claude Code attributes turns to skills today.${RESET}`);
+    return out;
+  }
+  if (active.length > 0) {
+    out.push(
+      table(
+        ['Skill', 'Sessions', 'Turns', 'First seen', 'Last used'],
+        active.slice(0, 15).map((u) => [
+          u.skill, String(u.sessions), String(u.turns), u.firstSeen.slice(0, 10), u.lastSeen.slice(0, 10),
+        ]),
+      ),
+    );
+    out.push(
+      `  ${DIM}Turns, not invocations: a skill attributes every turn it stays active for, so sessions are the adoption number.${RESET}`,
+    );
+  }
+  if (dormant.length > 0) {
+    out.push(
+      `\n  ${YELLOW}⚠${RESET} ${dormant.length} skill(s) used historically but not once in this window: ${dormant.slice(0, 8).map((u) => u.skill).join(', ')}`,
+    );
+    out.push(
+      `  ${DIM}Transcripts only reach back as far as your agent's retention, so "never used" here means "not seen in what survives".${RESET}`,
+    );
+  }
+
+  if (skills.roi.length > 0) {
+    out.push(section('Did codifying it work? (category recurrence before → after the skill)'));
+    out.push(
+      table(
+        ['Skill', 'Category', 'Link', 'Before/30d', 'After/30d', 'Realized', 'Status'],
+        skills.roi.slice(0, 10).map((r2) => [
+          r2.skill,
+          r2.category.length > 24 ? r2.category.slice(0, 23) + '…' : r2.category,
+          r2.link,
+          r2.beforePer30 ? r2.beforePer30.toFixed(1) : `${DIM}—${RESET}`,
+          r2.afterPer30 ? r2.afterPer30.toFixed(1) : `${DIM}—${RESET}`,
+          r2.realizedUsdPerMonth ? `${GREEN}~$${r2.realizedUsdPerMonth.toFixed(0)}/mo${RESET}` : `${DIM}—${RESET}`,
+          ROI_STATUS[r2.status] ?? r2.status,
+        ]),
+      ),
+    );
+    out.push(
+      `\n  ${DIM}Name-matched pairs (link "terms") are CANDIDATES — they show the before/after numbers and never a dollar figure, because nothing in the data says a skill was written for a category. Assert the link in ~/.token-monitor/skill-map.json to unlock the estimate.${RESET}`,
+    );
+    out.push(
+      `  ${DIM}A "map" figure still needs recurrence to have FALLEN with the skill in use, and at least ${ROI_MIN_BEFORE_SESSIONS} sessions before it appeared. A category can also fade because a project ended — this is correlation, and the number is recurrence delta × the category's average session cost.${RESET}`,
+    );
+  }
+  return out;
 }
 
 /** Finding lines with savings + worst-session evidence — shared with `analyze`. */

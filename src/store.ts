@@ -444,6 +444,78 @@ export function findSessions(db: DatabaseSync, prefix: string): Array<{ session_
 }
 
 /**
+ * Agent Skills seen per session (#67) — names and counts, nothing else.
+ *
+ * LOCAL ONLY by construction, the `agent_type` rule: a skill name can carry
+ * internal process or client vocabulary ("fdd-review", "acme-onboarding"), so
+ * it is never exported, never signed, and never sent to an LLM.
+ *
+ * `turns` rather than "invocations": the vendor field marks every turn a skill
+ * stays active for, so a single use of a long skill attributes dozens of
+ * turns. Sessions are the honest adoption unit; turns are the volume.
+ */
+export function ensureSessionSkillTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_skills (
+      source TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      skill TEXT NOT NULL,
+      turns INTEGER NOT NULL,
+      first_ts TEXT NOT NULL,
+      last_ts TEXT NOT NULL,
+      PRIMARY KEY (source, session_id, skill)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_skills_ts ON session_skills(last_ts);
+  `);
+}
+
+export interface SessionSkillRow {
+  source: string;
+  session_id: string;
+  skill: string;
+  turns: number;
+  first_ts: string;
+  last_ts: string;
+}
+
+/**
+ * Re-derived rather than accumulated: a session's turns are recounted from the
+ * transcript each collect, so re-collecting the same log is idempotent and a
+ * session that gained turns updates instead of double-counting.
+ */
+export function recordSessionSkills(db: DatabaseSync, rows: SessionSkillRow[]): number {
+  if (rows.length === 0) return 0;
+  ensureSessionSkillTable(db);
+  const stmt = db.prepare(`
+    INSERT INTO session_skills (source, session_id, skill, turns, first_ts, last_ts)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(source, session_id, skill) DO UPDATE SET
+      turns = MAX(turns, excluded.turns),
+      first_ts = MIN(first_ts, excluded.first_ts),
+      last_ts = MAX(last_ts, excluded.last_ts)
+  `);
+  let n = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) n += Number(stmt.run(r.source, r.session_id, r.skill, r.turns, r.first_ts, r.last_ts).changes);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return n;
+}
+
+/** Every recorded skill row, newest last. `days` bounds by LAST use. */
+export function loadSessionSkills(db: DatabaseSync, days?: number): SessionSkillRow[] {
+  ensureSessionSkillTable(db);
+  const where = days ? 'WHERE last_ts >= ?' : '';
+  const params = days ? [new Date(Date.now() - days * 86_400_000).toISOString()] : [];
+  return db.prepare(`SELECT * FROM session_skills ${where} ORDER BY last_ts`)
+    .all(...params) as unknown as SessionSkillRow[];
+}
+
+/**
  * Pull requests per session (#66) — a COUNT, never a description. The repo
  * name and URL are read to de-duplicate the link lines a session writes and
  * then discarded in the adapter, so the worst this table can leak is that a

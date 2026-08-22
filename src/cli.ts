@@ -6,7 +6,7 @@ import { ADAPTERS } from './adapters/index.js';
 import {
   openDb, insertEvents, loadEvents, DEFAULT_DB,
   relabelEvents, loadProjectAliases, applyProjectAliases, syncIntentProjects,
-  recordSessionPrs, loadPrSessions,
+  recordSessionPrs, loadPrSessions, recordSessionSkills,
 } from './store.js';
 import { renderReport, renderTeamReport, renderTrend, renderCategorize, renderRelay, renderRules, renderRule, lookupRule, renderContext } from './report.js';
 import { runRelayScan, relaySummary } from './relay-scan.js';
@@ -210,6 +210,23 @@ function runCollect(db: ReturnType<typeof openDb>, sources: Source[]): void {
     // Shipped-work signal (#66). Counts only — the adapter already discarded
     // the repo names and URLs these were derived from.
     if (prLinks?.length) recordSessionPrs(db, prLinks);
+    // Skill adoption (#67): turns per (session, skill), re-derived from this
+    // scan so re-collecting the same transcript is idempotent. Names stay
+    // local — see the session_skills comment.
+    const skillRows = new Map<string, { source: string; session_id: string; skill: string; turns: number; first_ts: string; last_ts: string }>();
+    for (const e of events) {
+      if (!e.skill) continue;
+      const key = `${e.source}\u001f${e.sessionId}\u001f${e.skill}`;
+      const row = skillRows.get(key) ?? {
+        source: e.source, session_id: e.sessionId, skill: e.skill,
+        turns: 0, first_ts: e.timestamp, last_ts: e.timestamp,
+      };
+      row.turns++;
+      if (e.timestamp < row.first_ts) row.first_ts = e.timestamp;
+      if (e.timestamp > row.last_ts) row.last_ts = e.timestamp;
+      skillRows.set(key, row);
+    }
+    if (skillRows.size) recordSessionSkills(db, [...skillRows.values()]);
     // Collect IS the backfill: converge historical rows of every session this
     // scan still sees onto the family-normalized (and aliased) project.
     const sessions = new Map<string, string>();

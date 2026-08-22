@@ -55,6 +55,16 @@ export interface UsageEvent {
    * cannot report this reads as unmeasured rather than free.
    */
   toolResultChars?: Record<string, number>;
+  /**
+   * The Agent Skill this turn was attributed to, when the harness named one.
+   * LOCAL ONLY, like `agentType`: a skill name can carry internal process or
+   * client vocabulary, so it never enters an export or an LLM payload.
+   *
+   * Undocumented vendor field. Note it marks TURNS, not invocations: a single
+   * use of a skill attributes every turn it stays active for, so "uses" here
+   * means turns, and sessions are the honest unit for adoption.
+   */
+  skill?: string;
   /** Turn produced visible reasoning (thinking blocks / thoughts). */
   hasThinking: boolean;
   /** A tool in this turn errored (test failure, bad command, etc.). */

@@ -26,6 +26,8 @@ import { deriveSessionIntent, fnv1a } from './intent.js';
 import { clusterLabels } from './cluster.js';
 import type { ClusterItem } from './cluster.js';
 import type { ExportCategory } from './team.js';
+import type { SkillReport } from './skills.js';
+import { skillReport } from './skills.js';
 
 export interface CategoryRow {
   id: string;
@@ -50,12 +52,22 @@ export interface CategorizeResult {
   categories: CategoryRow[];
   duplicates: CategoryRow[];
   skillCandidates: CategoryRow[];
+  /**
+   * Category id -> the dates of its sessions. Carried so skill ROI can split a
+   * category's recurrence at the moment a skill first appeared, without a
+   * second pass over the events or a frozen baseline table.
+   */
+  sessionDates?: Map<string, string[]>;
+  /** Skill adoption and ROI (#67); absent until `categorize` computes it. */
+  skills?: SkillReport;
 }
 
 interface SessionAgg {
   sessionId: string;
   source: string;
   project: string;
+  /** First turn's date (yyyy-mm-dd), for the skill-ROI split. */
+  date: string;
   tokens: number;
   cost: number;
   estimated: boolean;
@@ -87,6 +99,7 @@ function aggregateSession(sessionId: string, evs: StoredEvent[]): SessionAgg {
     sessionId,
     source: evs[0]?.source ?? 'claude-code',
     project: evs[0]?.project ?? 'unknown',
+    date: evs[0]?.ts ?? '',
     tokens,
     cost,
     estimated,
@@ -159,7 +172,9 @@ export function runCategorize(
 
   // Cluster the FROZEN (first-wins) fingerprints, so display is idempotent.
   const frozen = loadIntents(db, aggs.map((a) => a.sessionId));
-  return buildResult(aggs, frozen, days, opts);
+  const result = buildResult(aggs, frozen, days, opts);
+  result.skills = skillReport(db, result.categories, result.sessionDates!, { days });
+  return result;
 }
 
 const byCostThenSessions = (a: CategoryRow, b: CategoryRow) =>
@@ -209,10 +224,15 @@ function buildResult(
     };
   });
 
+  const sessionDates = new Map<string, string[]>(
+    clusters.map((c) => [c.id, c.items.map((it) => aggById.get(it.id)?.date ?? '').filter(Boolean)]),
+  );
+
   return {
     days,
     totalSessions: aggs.length,
     textSessions,
+    sessionDates,
     categories: [...categories].sort(byCostThenSessions),
     duplicates: categories.filter((c) => c.duplicate).sort((a, b) => b.cost - a.cost || byCostThenSessions(a, b)),
     skillCandidates: categories.filter((c) => c.hasText && c.sessions >= minCluster).sort(byCostThenSessions),
