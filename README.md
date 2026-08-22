@@ -237,6 +237,17 @@ Every threshold-fired recommendation answers "why should I believe this and what
 
 These show up in `report`, `analyze`, the HTML dashboard, and ride along in signed exports (`recommendationDetails`).
 
+Each one comes from a **rule** — a single file under `src/rules/` holding its firing condition, its message, and the arithmetic that prices it. `token-monitor rules` lists the catalogue and marks which fire on your window; `token-monitor rules <key>` explains one:
+
+```
+  Rule                   Metric             Goal     Family   Savings
+  ────────────────────   ────────────────   ──────   ───────  ───────────
+⚠ low-cache-hit          cacheHitRatio      ↑ raise  caching  priced
+· low-think-code         thinkToCodeRatio   ↑ raise  —        advice only
+```
+
+Adding a rule is one file, one fixture and one test — the smallest useful contribution, and the fastest way to encode a waste pattern you keep hitting. See [CONTRIBUTING.md](CONTRIBUTING.md#writing-a-waste-rule).
+
 Three more pieces of intelligence:
 
 - **Personalized targets** — with enough sessions, targets come from *your own* top-quartile sessions ("your best sessions already hit 92% cache") instead of static heuristics; thin data falls back to the static targets.
@@ -312,6 +323,7 @@ token-monitor collect [--source claude-code|gemini-cli|codex|cursor|antigravity|
 token-monitor report  [--days 30] [--trend] [--project <name>] [--source <name>] [--json] [--no-categories] [--db <path>]
 token-monitor categorize [--days 30] [--threshold 0.4] [--min-cluster 2] [--project <name>] [--source <name>] [--json] [--html <path>] [--db <path>]
 token-monitor analyze [--days 30] [--llm] [--agent claude|gemini|codex] [--json] [--db <path>]
+token-monitor rules   [<rule-key>] [--days 30] [--json] [--db <path>]
 token-monitor html    [--out report.html] [--days 30] [--db <path>]
 token-monitor merge   <export.json>... [--team teams.yaml] [--by team|discipline] [--verify] [--keys keys.json] [--threshold 0.4] [--min-cluster 2] [--json] [--html team.html]
 token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
@@ -319,7 +331,12 @@ token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
 
 ## Contributing
 
-The most valuable contribution: an adapter for another agent CLI (Aider, OpenCode, Cursor…). See [CONTRIBUTING.md](CONTRIBUTING.md) for the adapter guide, fixtures, and conventions. `npm test` runs the suite; CI covers Node 24/25 on Linux + macOS.
+Two ways in, both documented in [CONTRIBUTING.md](CONTRIBUTING.md):
+
+- **A waste rule** — one file in `src/rules/`, one fixture, one test. Several are pre-specced as `good first issue`.
+- **An adapter for another agent CLI** (Aider, OpenCode, Windsurf…) — bigger, and the highest-value change when a tool nobody has covered writes logs somewhere.
+
+`npm test` runs the suite; CI covers Node 24/25 on Linux + macOS.
 
 ## Roadmap
 

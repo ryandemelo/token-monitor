@@ -17,6 +17,9 @@ import type { CategorizeResult, CategorizeSummary } from './categorize.js';
 import { fmtCategorizeSummary } from './categorize.js';
 import type { MergedCategories, OrgCategory } from './team-categories.js';
 import type { RelayResult, RelaySummary } from './relay-scan.js';
+import { fmtTokens } from './fmt.js';
+import type { Rule } from './rules/index.js';
+import { RULES, RULE_BY_KEY } from './rules/index.js';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -26,11 +29,10 @@ const YELLOW = '\x1b[33m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 
-export function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-  return String(n);
-}
+// Re-exported so the many `import { fmtTokens } from './report.js'` call
+// sites keep working; the implementation lives in fmt.ts so rules can use it
+// without importing the renderer.
+export { fmtTokens };
 
 function fmtCost(m: Metrics): string {
   const prefix = m.costEstimated ? '~' : '';
@@ -389,6 +391,66 @@ export function renderRelay(r: RelayResult): string {
     `  ${DIM}Overlap is measured on hashed 8-word shingles; prompt and response text is never stored, printed, or sent.${RESET}\n`,
   );
   return out.join('\n');
+}
+
+/**
+ * The rule catalogue — every waste heuristic the tool knows, whether it fires
+ * on the current window, and where its file lives. It doubles as the
+ * contributor's index: the list IS the extension point.
+ */
+export function renderRules(m?: Metrics): string {
+  const out: string[] = [];
+  out.push(section(`Waste rules (${RULES.length})`));
+  const firing = new Set(m ? RULES.filter((r) => r.fires(m)).map((r) => r.key) : []);
+  out.push(
+    table(
+      ['', 'Rule', 'Metric', 'Goal', 'Family', 'Savings'],
+      RULES.map((r) => [
+        m ? (firing.has(r.key) ? `${YELLOW}⚠${RESET}` : `${DIM}·${RESET}`) : ' ',
+        r.key,
+        r.metric,
+        r.direction === 'up' ? '↑ raise' : '↓ lower',
+        r.family ?? `${DIM}—${RESET}`,
+        r.savings ? 'priced' : `${DIM}advice only${RESET}`,
+      ]),
+    ),
+  );
+  if (m) {
+    const n = firing.size;
+    out.push(`\n  ${DIM}${n === 0 ? 'none firing' : `${n} firing`} on the current window (⚠). Run \`token-monitor rules <key>\` for what one measures.${RESET}`);
+  } else {
+    out.push(`\n  ${DIM}Run \`token-monitor rules <key>\` for what one measures, or with a collected database to see which fire.${RESET}`);
+  }
+  out.push(
+    `  ${DIM}Each rule is one file in src/rules/ — see CONTRIBUTING.md to add one.${RESET}\n`,
+  );
+  return out.join('\n');
+}
+
+/** One rule's documentation, for `token-monitor rules <key>`. */
+export function renderRule(rule: Rule, m?: Metrics): string {
+  const out: string[] = [];
+  out.push(section(`${rule.key} — ${rule.title}`));
+  out.push(
+    `  ${DIM}metric${RESET} ${rule.metric}  ${DIM}·${RESET} ${rule.direction === 'up' ? 'higher is better' : 'lower is better'}` +
+      `  ${DIM}·${RESET} family ${rule.family ?? 'none'}  ${DIM}·${RESET} ${rule.savings ? 'savings priced' : 'advice only'}`,
+  );
+  if (m) {
+    const message = rule.fires(m);
+    out.push(
+      message
+        ? `  ${YELLOW}⚠ fires on the current window:${RESET} ${message}`
+        : `  ${GREEN}✓${RESET} ${DIM}does not fire on the current window${RESET}`,
+    );
+  }
+  out.push('');
+  for (const line of rule.docs.split('\n')) out.push(`  ${line}`);
+  out.push(`\n  ${DIM}src/rules/${rule.key}.ts${RESET}\n`);
+  return out.join('\n');
+}
+
+export function lookupRule(key: string): Rule | undefined {
+  return RULE_BY_KEY.get(key);
 }
 
 export function renderEnrichedRecs(recs: EnrichedRec[]): string[] {

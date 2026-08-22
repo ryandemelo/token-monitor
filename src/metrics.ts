@@ -114,6 +114,17 @@ export interface Metrics {
   subagentShare: number;
 }
 
+/**
+ * Premium-model share of spend. Lives here rather than in followthrough.ts so
+ * a rule can use it without importing the module that imports the rules.
+ * Re-exported from followthrough.js for the existing call sites.
+ */
+export function premiumShare(m: Metrics): number {
+  const premium = Object.entries(m.byModel).filter(([name]) => PREMIUM_MODEL_RE.test(name));
+  if (!premium.length) return 0;
+  return premium.reduce((s, [, v]) => s + v.tokens, 0) / (m.spendTokens || 1);
+}
+
 export function computeMetrics(events: StoredEvent[]): Metrics {
   const byActivity = Object.fromEntries(
     ACTIVITIES.map((a) => [a, { tokens: 0, share: 0, events: 0 }]),

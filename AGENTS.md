@@ -28,5 +28,6 @@ If the user works in a VS Code-family IDE (VS Code, Cursor, Windsurf, Antigravit
 - **Zero runtime dependencies is a hard constraint** — only Node built-ins (`node:sqlite`, `node:util` parseArgs). Do not add packages.
 - Privacy is a hard constraint: adapters store aggregate numbers, tool names, timestamps, and project basenames — never prompt or code content. Fixtures must be synthetic; sample output in docs must use fictional project names and costs.
 - New adapters: follow CONTRIBUTING.md — `src/adapters/<name>.ts` with the log root as a parameter, fixtures under `test/fixtures/<name>/`, registered in `src/adapters/index.ts`.
+- New findings ("waste rules"): one file in `src/rules/` exporting a default `Rule` (contract in `src/rules/types.ts`), listed in `src/rules/index.ts`, with a test. `fires()` gets metrics only — it is called on merged team metrics too. `token-monitor rules` prints the catalogue.
 - Workflow: feature branches (`feat/...`, `fix/...`, `chore/...`) → PR → merge to `main`. Releases are tagged `vX.Y.Z`.
 - Never commit user-specific agent context (`.claude/`, `CLAUDE.md`, `.gemini/`) or generated reports/exports (`report.html`, `exports/`) — these are gitignored; keep them that way.

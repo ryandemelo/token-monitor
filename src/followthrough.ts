@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Metrics } from './metrics.js';
-import { PREMIUM_MODEL_RE } from './pricing.js';
+import { premiumShare } from './metrics.js';
+import { RULES } from './rules/index.js';
 
 /**
  * Follow-through: a recommendation is only useful if you can see whether it
@@ -26,11 +27,7 @@ export type MetricKey =
   | 'premiumWasteShare'
   | 'retryShare';
 
-export function premiumShare(m: Metrics): number {
-  const premium = Object.entries(m.byModel).filter(([name]) => PREMIUM_MODEL_RE.test(name));
-  if (!premium.length) return 0;
-  return premium.reduce((s, [, v]) => s + v.tokens, 0) / (m.spendTokens || 1);
-}
+export { premiumShare };
 
 export function metricValue(m: Metrics, key: MetricKey): number {
   if (key === 'premiumShare') return premiumShare(m);
@@ -53,75 +50,19 @@ export const METRIC_DIRECTION: Record<MetricKey, 'up' | 'down'> = {
   retryShare: 'down',
 };
 
+/**
+ * Every rule in the registry, asked whether it fires on these metrics. Rules
+ * live one-per-file under src/rules/ — adding a finding is a new file plus one
+ * line in rules/index.ts, and nothing else in the pipeline changes.
+ *
+ * Called with MERGED TEAM metrics as well as a single user's, so a rule may
+ * only look at the Metrics object it is handed — never at events.
+ */
 export function structuredFindings(m: Metrics): Finding[] {
   const out: Finding[] = [];
-  if (m.cacheHitRatio < 0.5 && m.spendTokens > 100_000) {
-    out.push({
-      key: 'low-cache-hit',
-      metric: 'cacheHitRatio',
-      direction: 'up',
-      message: `Cache hit ratio ${(m.cacheHitRatio * 100).toFixed(0)}% — low. Cache reads cost ~10% of fresh input; long-lived sessions and stable system context raise this. Biggest single cost lever.`,
-    });
-  }
-  if (m.reworkRatio > 0.2) {
-    out.push({
-      key: 'high-rework',
-      metric: 'reworkRatio',
-      direction: 'down',
-      message: `${(m.reworkRatio * 100).toFixed(0)}% of spend happens after test failures. Plan-first workflows and tighter task specs cut this.`,
-    });
-  }
-  if (m.thinkToCodeRatio < 0.15 && m.byActivity.coding.tokens > 50_000) {
-    out.push({
-      key: 'low-think-code',
-      metric: 'thinkToCodeRatio',
-      direction: 'up',
-      message: 'Very low think:code ratio. Teams that spend 15-30% of tokens on planning/exploration ship with less rework.',
-    });
-  }
-  const share = premiumShare(m);
-  if (share > 0.9 && Object.keys(m.byModel).length > 1) {
-    out.push({
-      key: 'premium-model-overuse',
-      metric: 'premiumShare',
-      direction: 'down',
-      message: `${(share * 100).toFixed(0)}% of tokens on premium models. Route exploration and boilerplate turns to a cheaper tier.`,
-    });
-  }
-  if (m.contextBloatShare >= 0.3 && m.trendSessions >= 3) {
-    out.push({
-      key: 'context-bloat',
-      metric: 'contextBloatShare',
-      direction: 'down',
-      message: `${m.bloatedSessions} of ${m.trendSessions} long sessions grow their context ≥2× without cache reads keeping pace — start a fresh session or compact at task boundaries before the context balloons.`,
-    });
-  }
-  // Volume gate on MAIN-LOOP spend: the ratio is measured over main-loop
-  // fresh input, so a 20k-token conversation must not clear the bar on the
-  // back of 500k spent by its subagents.
-  if (m.coldRestartShare >= 0.2 && m.spendTokens - (m.subagentSpendTokens ?? 0) > 100_000) {
-    out.push({
-      key: 'cold-restarts',
-      metric: 'coldRestartShare',
-      direction: 'down',
-      message: `${(m.coldRestartShare * 100).toFixed(0)}% of main-loop fresh input tokens were re-paid on ${m.coldRestartTurns} turns that resumed after their session's cache TTL${m.extendedCacheSessions ? ' (1 h where the session wrote to the extended cache, ~5 min otherwise)' : ' (~5 min)'}. Batch prompts within the cache window, or split long-idle work into new sessions.`,
-    });
-  }
-  if (m.premiumWasteShare >= 0.3 && m.spendTokens > 100_000) {
-    out.push({
-      key: 'premium-misroute',
-      metric: 'premiumWasteShare',
-      direction: 'down',
-      message: `${(m.premiumWasteShare * 100).toFixed(0)}% of spend is premium-model tokens on exploration/conversation turns. Route reads and chat to a cheaper tier; keep the premium model for code-writing turns.`,
-    });
-  }
-  if (m.retryShare >= 0.05) {
-    out.push({
-      key: 'tool-retry-loops',
-      metric: 'retryShare',
-      direction: 'down',
-      message: `${(m.retryShare * 100).toFixed(0)}% of spend goes to turns re-running a tool right after it errored. \`analyze\` shows which tools — fix the recurring cause (flaky command, bad path, missing permission) instead of paying for retries.`,
-    });
+  for (const rule of RULES) {
+    const message = rule.fires(m);
+    if (message) out.push({ key: rule.key, metric: rule.metric, direction: rule.direction, message });
   }
   return out;
 }
