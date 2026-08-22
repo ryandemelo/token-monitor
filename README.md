@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ryandemelo/token-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ryandemelo/token-monitor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![good first issues](https://img.shields.io/github/issues/ryandemelo/token-monitor/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/ryandemelo/token-monitor/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 Measure how effectively your team spends AI coding-agent tokens — locally, with zero setup.
 
@@ -379,12 +380,31 @@ token-monitor reconcile [--provider anthropic|openai] [--days 30] [--db <path>]
 
 ## Contributing
 
-Two ways in, both documented in [CONTRIBUTING.md](CONTRIBUTING.md):
+Two ways in, both documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- **A waste rule** — one file in `src/rules/`, one fixture, one test. Several are pre-specced as `good first issue`, and `token-monitor donate-fixture <session>` turns one of your own sessions into a synthetic fixture to write it against.
-- **An adapter for another agent CLI** (Aider, OpenCode, Windsurf…) — bigger, and the highest-value change when a tool nobody has covered writes logs somewhere.
+**Write a waste rule.** One file in `src/rules/`, one fixture, one test — no pipeline knowledge needed. This is where your own habits are better evidence than the maintainer's: if your agent keeps doing something expensive, encode it and everyone else's report learns to catch it.
 
-`npm test` runs the suite; CI covers Node 24/25 on Linux + macOS.
+```sh
+token-monitor rules                        # the catalogue, and which fire on your data
+token-monitor donate-fixture <id-prefix>   # your own session, scrubbed into a fixture
+```
+
+Eight are pre-specced and open as [`good first issue`](https://github.com/ryandemelo/token-monitor/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — each with its likely false positive written out, because that is the part you cannot get from the code:
+
+| Rule | The pattern |
+|---|---|
+| `error-cascade` | runs of three or more consecutive failing turns |
+| `search-loop` | long unbroken exploration with nothing landing |
+| `redundant-reads` | re-reading what is already in context |
+| `untested-coding` | projects with coding spend and no test turns |
+| `mega-turns` | single turns emitting runaway output |
+| `abandoned-on-error` | sessions whose last turn failed |
+| `session-thrash` | overlapping sessions in one project, each paying its own floor |
+| `thinking-on-trivial` | reasoning tokens on turns that produced nothing |
+
+**Write an adapter.** Bigger, and the highest-value change when a tool nobody has covered writes logs somewhere: [Aider](https://github.com/ryandemelo/token-monitor/issues/38), [OpenCode](https://github.com/ryandemelo/token-monitor/issues/39), [Windsurf](https://github.com/ryandemelo/token-monitor/issues/12) are open.
+
+`npm test` runs the suite; CI covers Node 24/25 on Linux + macOS. Zero runtime dependencies is a hard constraint — please keep it that way.
 
 ## Roadmap
 
