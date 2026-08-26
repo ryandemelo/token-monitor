@@ -207,6 +207,8 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   const out: Metrics = {
     events: 0, sessions: 0,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, thinkingTokens: 0,
+    thinkingOnTrivialTokens: 0, thinkingOnTrivialTurns: 0, thinkingObservedTurns: 0,
+    thinkingOnTrivialShare: 0,
     spendTokens: 0, costUsd: 0, costEstimated: false, costUnpricedTokens: 0,
     cacheHitRatio: 0, reworkTokens: 0, reworkRatio: 0, errorEvents: 0,
     byActivity, byModel, thinkToCodeRatio: 0,
@@ -231,6 +233,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.cacheReadTokens += m.cacheReadTokens;
     out.cacheCreationTokens += m.cacheCreationTokens;
     out.thinkingTokens += m.thinkingTokens;
+    out.thinkingOnTrivialTokens += m.thinkingOnTrivialTokens ?? 0;
+    out.thinkingOnTrivialTurns += m.thinkingOnTrivialTurns ?? 0;
+    out.thinkingObservedTurns += m.thinkingObservedTurns ?? 0;
     out.spendTokens += m.spendTokens;
     out.costUsd += m.costUsd;
     out.costEstimated ||= m.costEstimated;
@@ -294,6 +299,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     : 0;
   out.premiumWasteShare = out.spendTokens ? out.premiumWasteTokens / out.spendTokens : 0;
   out.retryShare = out.spendTokens ? out.retryTokens / out.spendTokens : 0;
+  out.thinkingOnTrivialShare = out.spendTokens
+    ? out.thinkingOnTrivialTokens / out.spendTokens
+    : 0;
   // Pre-0.13 exports carry no subagent fields at all, so a team share is a
   // floor over the members who can actually see their fan-out.
   out.subagentShare = out.spendTokens ? out.subagentSpendTokens / out.spendTokens : 0;

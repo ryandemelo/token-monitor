@@ -6,6 +6,7 @@ import { structuredFindings } from '../src/followthrough.js';
 import { enrichFindings, targetFor } from '../src/recommendations.js';
 import { renderRules, renderRule } from '../src/report.js';
 import { makeStored } from './helpers.js';
+import { TRIVIAL_OUTPUT_TOKENS } from '../src/metrics.js';
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +67,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'premium-misroute',
     'tool-retry-loops',
     'tool-result-bloat',
+    'thinking-on-trivial',
     'context-floor-creep',
     'abandoned-work',
   ]);
@@ -103,6 +105,59 @@ test('rules fire through the registry and reach enrichFindings with evidence', (
   // low-think-code declares no savings function: advice-only rules stay unpriced.
   const think = enriched.find((r) => r.key === 'low-think-code');
   if (think) assert.equal(think.savingsUsdPerMonth, undefined);
+});
+
+test('thinking-on-trivial: prices metered reasoning, not folded-output guesses', () => {
+  const base = {
+    activity: 'conversation',
+    input_tokens: 20_000,
+    output_tokens: 100,
+    thinking_tokens: 2_000,
+  };
+  const measured = Array.from({ length: 3 }, (_, i) =>
+    makeStored({ ...base, session_id: `measured-${i}`, ts: `2026-06-0${i + 1}T00:00:00.000Z` }),
+  );
+  const mMeasured = computeMetrics(measured);
+  assert.equal(mMeasured.thinkingOnTrivialTokens, 6_000);
+  assert.equal(mMeasured.thinkingOnTrivialTurns, 3);
+  assert.ok(mMeasured.thinkingOnTrivialShare > 0);
+
+  const rule = RULE_BY_KEY.get('thinking-on-trivial')!;
+  assert.match(rule.fires!(mMeasured) ?? '', /metered reasoning/);
+  const enriched = enrichFindings(measured, mMeasured, 30).find(
+    (r) => r.key === 'thinking-on-trivial',
+  )!;
+  assert.ok(enriched.savingsUsdPerMonth! > 0);
+
+  // Two turns are not a habit.
+  const tooFew = computeMetrics(measured.slice(0, 2));
+  assert.equal(tooFew.thinkingOnTrivialTokens, 4_000);
+  assert.equal(rule.fires!(tooFew), undefined);
+
+  // A source that says "reasoning happened" without separately metering it
+  // is observed but never priced from ordinary output tokens.
+  const folded = Array.from({ length: 3 }, (_, i) =>
+    makeStored({
+      ...base,
+      session_id: 'folded',
+      ts: `2026-06-0${i + 1}T00:00:00.000Z`,
+      thinking_tokens: 0,
+      has_thinking: 1,
+    }),
+  );
+  const mFolded = computeMetrics(folded);
+  assert.equal(mFolded.thinkingObservedTurns, 3);
+  assert.equal(mFolded.thinkingOnTrivialTokens, 0);
+  assert.equal(mFolded.thinkingOnTrivialTurns, 0);
+  assert.equal(rule.fires!(mFolded), undefined);
+
+  // Reasoning that produces visible work or drives tools is excluded.
+  const productive = computeMetrics([
+    makeStored({ ...base, output_tokens: TRIVIAL_OUTPUT_TOKENS + 1 }),
+    makeStored({ ...base, tools: JSON.stringify(['Read']) }),
+    makeStored({ ...base, activity: 'coding' }),
+  ]);
+  assert.equal(productive.thinkingOnTrivialTokens, 0);
 });
 
 test('cold-restarts contributes its extended-cache clause through Rule.clause', () => {

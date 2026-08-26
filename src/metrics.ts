@@ -34,6 +34,10 @@ export function effectiveCacheTtlOf(rows: StoredEvent[]): number {
 export const BLOAT_MIN_TURNS = 8;
 export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
 export const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
+/** A visible answer this small is a trivial turn, not evidence against reasoning. */
+export const TRIVIAL_OUTPUT_TOKENS = 200;
+/** Avoid calling three accidental small turns a habit. */
+export const TRIVIAL_THINKING_MIN_TURNS = 3;
 
 /**
  * The conversation a turn belongs to from the user's point of view: a subagent
@@ -53,6 +57,17 @@ export interface Metrics {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   thinkingTokens: number;
+  /**
+   * Reasoning tokens on conversation turns that emitted almost nothing and
+   * called no tools (#94). Only separately metered reasoning is included;
+   * sources that fold it into output stay unmeasured rather than guessed.
+   */
+  thinkingOnTrivialTokens: number;
+  /** Turns represented by the numerator, and all turns with any reasoning signal. */
+  thinkingOnTrivialTurns: number;
+  thinkingObservedTurns: number;
+  /** Measured numerator over input + output spend. */
+  thinkingOnTrivialShare: number;
   /** input + output — the "work" tokens used for activity shares. */
   spendTokens: number;
   costUsd: number;
@@ -283,6 +298,7 @@ export function computeMetrics(
   let extendedCacheSessions = 0;
   let toolResultTokens = 0, toolResultTurns = 0;
   const subagentSessions = new Set<string>();
+  let thinkingOnTrivialTokens = 0, thinkingOnTrivialTurns = 0, thinkingObservedTurns = 0;
 
   // Rework: group by session, walk chronologically, count spend after first failed event.
   const bySession = new Map<string, StoredEvent[]>();
@@ -308,6 +324,21 @@ export function computeMetrics(
     cacheRead += e.cache_read_tokens;
     cacheCreate += e.cache_creation_tokens;
     thinking += e.thinking_tokens;
+    if (e.has_thinking || e.thinking_tokens > 0) {
+      thinkingObservedTurns++;
+      if (
+        e.activity === 'conversation' &&
+        e.output_tokens <= TRIVIAL_OUTPUT_TOKENS &&
+        parseTools(e.tools).length === 0
+      ) {
+        // has_thinking without thinking_tokens means the source saw reasoning but did
+        // not meter it separately; counting the whole turn would overstate waste.
+        if (e.thinking_tokens > 0) {
+          thinkingOnTrivialTokens += e.thinking_tokens;
+          thinkingOnTrivialTurns++;
+        }
+      }
+    }
     if (e.is_error) errorEvents++;
 
     const spend = e.input_tokens + e.output_tokens;
@@ -445,6 +476,10 @@ export function computeMetrics(
     cacheReadTokens: cacheRead,
     cacheCreationTokens: cacheCreate,
     thinkingTokens: thinking,
+    thinkingOnTrivialTokens,
+    thinkingOnTrivialTurns,
+    thinkingObservedTurns,
+    thinkingOnTrivialShare: spendTokens ? thinkingOnTrivialTokens / spendTokens : 0,
     spendTokens,
     costUsd,
     costEstimated,

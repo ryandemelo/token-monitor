@@ -8,6 +8,7 @@ import coldRestarts from './cold-restarts.js';
 import premiumMisroute from './premium-misroute.js';
 import toolRetryLoops from './tool-retry-loops.js';
 import toolResultBloat from './tool-result-bloat.js';
+import thinkingOnTrivial from './thinking-on-trivial.js';
 import contextFloorCreep from './context-floor-creep.js';
 import abandonedWork from './abandoned-work.js';
 
@@ -32,6 +33,7 @@ export const RULES: Rule[] = [
   premiumMisroute,
   toolRetryLoops,
   toolResultBloat,
+  thinkingOnTrivial,
   contextFloorCreep,
   abandonedWork,
 ];
