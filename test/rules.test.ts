@@ -68,6 +68,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'tool-result-bloat',
     'context-floor-creep',
     'abandoned-work',
+    'session-thrash',
   ]);
 });
 
@@ -137,4 +138,71 @@ test('renderRules lists every rule; renderRule prints one rule with its firing s
   assert.match(one, /fires on the current window/);
   // With no metrics at all the catalogue still renders (never-collected machine).
   assert.ok(renderRules().includes('tool-retry-loops'));
+});
+
+test('session-thrash: gates on detected overlapping clusters, not generic floor presence', () => {
+  const base = {
+    project: 'proj-a',
+    input_tokens: 30_000,
+    output_tokens: 1_000,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    activity: 'coding',
+  };
+  // Five sessions are enough for the shared floor estimator. They are strictly
+  // serial and separated by days, so no cluster exists despite floorShare > 0.
+  const sequential = Array.from({ length: 5 }, (_, i) =>
+    makeStored({
+      ...base,
+      session_id: `serial-${i}`,
+      ts: `2026-06-0${i + 1}T00:00:00.000Z`,
+    }),
+  );
+  const mSerial = computeMetrics(sequential);
+  assert.ok(mSerial.floorShare > 0);
+  assert.equal(mSerial.thrashedProjects, 0);
+  assert.equal(mSerial.thrashExtraFloorTokens, 0);
+  assert.equal(mSerial.thrashShare, 0);
+  const serialRule = RULE_BY_KEY.get('session-thrash')!;
+  assert.equal(serialRule.fires!(mSerial), undefined);
+
+  // A second session starts before the first ends (past the grace window), so
+  // the detector finds one extra session and the gate can fire honestly.
+  const concurrent = [
+    makeStored({ ...base, session_id: 'long', ts: '2026-06-01T00:00:00.000Z' }),
+    makeStored({ ...base, session_id: 'long', ts: '2026-06-02T12:00:00.000Z' }),
+    makeStored({
+      ...base,
+      session_id: 'parallel',
+      input_tokens: 40_000,
+      ts: '2026-06-01T03:00:00.000Z',
+    }),
+    makeStored({
+      ...base,
+      session_id: 'parallel',
+      input_tokens: 40_000,
+      ts: '2026-06-01T04:00:00.000Z',
+    }),
+    makeStored({ ...base, session_id: 'third', ts: '2026-06-05T00:00:00.000Z' }),
+    makeStored({ ...base, session_id: 'filler-1', ts: '2026-06-06T00:00:00.000Z' }),
+    makeStored({ ...base, session_id: 'filler-2', ts: '2026-06-07T00:00:00.000Z' }),
+  ];
+  const mConcurrent = computeMetrics(concurrent);
+  assert.equal(mConcurrent.thrashedProjects, 1);
+  assert.equal(mConcurrent.thrashExtraFloorTokens, mConcurrent.sessionFloorTokens);
+  assert.ok(mConcurrent.thrashShare > 0);
+  assert.match(serialRule.fires!(mConcurrent) ?? '', /Parallel main-loop sessions/);
+  const zeroRates = {
+    input: 0,
+    cacheRead: 0,
+    spend: 0,
+    premium: 0,
+    cheap: 0,
+    extendedWritePremium: 0,
+    estimated: false,
+  };
+  assert.match(
+    serialRule.clause!({ events: concurrent, rates: zeroRates, monthly: 1, m: mConcurrent }),
+    /2 concurrent/,
+  );
 });

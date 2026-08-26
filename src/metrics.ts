@@ -147,6 +147,14 @@ export interface Metrics {
   /** floor × main-loop turns / main-loop input-side tokens. */
   floorShare: number;
   /**
+   * Session-thrash (#93): projects with an overlapping cluster of two or more
+   * main-loop sessions, plus one median session floor charged for every extra
+   * session. The share puts those duplicated floors over all input-side spend.
+   */
+  thrashedProjects: number;
+  thrashExtraFloorTokens: number;
+  thrashShare: number;
+  /**
    * Outcomes (#66). Every other metric here is denominator-less — this is the
    * first one that asks what the tokens BOUGHT.
    *
@@ -197,6 +205,69 @@ function median(sorted: number[]): number {
  * two conversations is not a measurement, and the metric feeds a finding.
  */
 export const FLOOR_MIN_SESSIONS = 5;
+/** Minimum interval overlap (ms) before two sessions count as concurrent. */
+export const SESSION_THRASH_MIN_OVERLAP_MS = 5 * 60_000;
+/** Session intervals are grouped by project for thrash detection. */
+export const SESSION_THRASH_GROUP_KEY = 'project';
+
+export interface ThrashGroup {
+  project: string;
+  sessions: number;
+  extraFloorTokens: number;
+}
+
+/**
+ * Main-loop sessions in the same project whose [first, last] intervals overlap
+ * past the grace window. Clusters are built greedily in start order; every
+ * session past the first adds one median session floor.
+ */
+export function detectSessionThrash(events: StoredEvent[], sessionFloorTokens: number): ThrashGroup[] {
+  if (sessionFloorTokens <= 0) return [];
+  const main = events.filter((e) => e.is_sidechain !== 1);
+  const byProject = groupBy(main, SESSION_THRASH_GROUP_KEY);
+  const out: ThrashGroup[] = [];
+  for (const [project, evs] of byProject) {
+    const bySession = new Map<string, { start: number; end: number }>();
+    for (const e of evs) {
+      const t = Date.parse(e.ts);
+      const cur = bySession.get(e.session_id);
+      if (!cur) bySession.set(e.session_id, { start: t, end: t });
+      else {
+        if (t < cur.start) cur.start = t;
+        if (t > cur.end) cur.end = t;
+      }
+    }
+    const intervals = [...bySession.values()].sort((a, b) => a.start - b.start);
+    let clusterEnd = -Infinity;
+    let clusterSize = 0;
+    let extra = 0;
+    let open = false;
+    const flush = () => {
+      if (open && clusterSize > 1) {
+        out.push({ project, sessions: clusterSize, extraFloorTokens: extra * sessionFloorTokens });
+      }
+      open = false;
+      clusterSize = 0;
+      extra = 0;
+    };
+    for (const iv of intervals) {
+      // A restart starts after the previous cluster has already been open long
+      // enough; only a genuine overlap extends the current cluster.
+      if (open && iv.start < clusterEnd - SESSION_THRASH_MIN_OVERLAP_MS) {
+        clusterSize += 1;
+        extra += 1;
+        clusterEnd = Math.max(clusterEnd, iv.end);
+      } else {
+        flush();
+        open = true;
+        clusterSize = 1;
+        clusterEnd = iv.end;
+      }
+    }
+    flush();
+  }
+  return out.sort((a, b) => b.extraFloorTokens - a.extraFloorTokens);
+}
 
 /**
  * A result stops being carried when the context it lives in is thrown away.
@@ -345,6 +416,7 @@ export function computeMetrics(
   let retryTokens = 0;
   let carryTokens = 0;
   let floorTurns = 0, floorBaseTokens = 0;
+  let thrashedProjects = 0, thrashExtraFloorTokens = 0;
   const floors: number[] = [];
   for (const arr of bySession.values()) {
     const firstFail = arr.findIndex((e) => e.is_error && (e.activity === 'testing' || e.activity === 'coding'));
@@ -431,12 +503,19 @@ export function computeMetrics(
       }
       prevErrTools = e.is_error ? new Set(tools) : undefined;
     }
+
   }
 
   const codingTokens = byActivity.coding.tokens || 1;
   const inputSide = input + cacheRead + cacheCreate;
   const outcomes = computeOutcomes(events, opts);
   const floorTokens = floors.length >= FLOOR_MIN_SESSIONS ? median([...floors].sort((a, b) => a - b)) : 0;
+  // Session-thrash needs all projects in one pass and must run only after the
+  // shared floor estimator is available; per-session grouping cannot see overlap.
+  for (const group of detectSessionThrash(events, floorTokens)) {
+    thrashedProjects++;
+    thrashExtraFloorTokens += group.extraFloorTokens;
+  }
   return {
     events: events.length,
     sessions: sessions.size,
@@ -482,6 +561,9 @@ export function computeMetrics(
     floorTurns,
     floorBaseTokens,
     floorShare: floorBaseTokens ? (floorTokens * floorTurns) / floorBaseTokens : 0,
+    thrashedProjects,
+    thrashExtraFloorTokens,
+    thrashShare: floorBaseTokens ? thrashExtraFloorTokens / floorBaseTokens : 0,
     ...outcomes,
   };
 }

@@ -68,6 +68,11 @@ export interface ClauseArgs {
   rates: BlendedRates;
   /** Multiplier turning a window figure into a monthly one. */
   monthly: number;
+  /**
+   * Window metrics when the caller already computed them. Evidence-only rules
+   * can reuse measured aggregates instead of re-deriving them from events.
+   */
+  m?: Metrics;
 }
 
 /**

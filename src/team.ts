@@ -219,6 +219,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     toolResultTokens: 0, toolResultTurns: 0,
     toolResultCarryTokens: 0, toolResultCarryShare: 0,
     sessionFloorTokens: 0, floorSessions: 0, floorTurns: 0, floorBaseTokens: 0, floorShare: 0,
+    thrashedProjects: 0, thrashExtraFloorTokens: 0, thrashShare: 0,
     shippedSessions: 0, conversations: 0, shippedShare: 0,
     costPerShippedSession: 0, tokensPerShippedSession: 0,
     abandonedTokens: 0, abandonedShare: 0, abandonedStreams: 0, openStreams: 0, openTokens: 0,
@@ -257,6 +258,9 @@ export function mergeMetrics(list: Metrics[]): Metrics {
     out.floorSessions += m.floorSessions ?? 0;
     out.floorTurns += m.floorTurns ?? 0;
     out.floorBaseTokens += m.floorBaseTokens ?? 0;
+    out.thrashedProjects += m.thrashedProjects ?? 0;
+    out.thrashExtraFloorTokens += m.thrashExtraFloorTokens ?? 0;
+    // Legacy exports have no thrash fields and therefore merge as zeros.
     // Medians don't add. The composable pieces are the numerator (this
     // member's floor charged over their own turns) and the denominator, which
     // is why both are carried; the merged "floor" below is therefore a
@@ -307,6 +311,7 @@ export function mergeMetrics(list: Metrics[]): Metrics {
   const floorNumerator = out.sessionFloorTokens;
   out.sessionFloorTokens = out.floorTurns ? floorNumerator / out.floorTurns : 0;
   out.floorShare = out.floorBaseTokens ? floorNumerator / out.floorBaseTokens : 0;
+  out.thrashShare = out.floorBaseTokens ? out.thrashExtraFloorTokens / out.floorBaseTokens : 0;
   out.extendedCacheShare = out.cacheCreationTokens
     ? out.extendedCacheTokens / out.cacheCreationTokens
     : 0;

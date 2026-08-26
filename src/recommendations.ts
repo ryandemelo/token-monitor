@@ -164,7 +164,7 @@ export function enrichFindings(events: StoredEvent[], m: Metrics, days: number):
             .map(({ s, label }) => ({ sessionId: s.sessionId, project: s.project, date: s.date, label }))
         : [];
       const target = targetFor(f.key, sessions);
-      const extended = rule?.clause?.({ events, rates, monthly }) ?? '';
+      const extended = rule?.clause?.({ events, rates, monthly, m }) ?? '';
       const usd = rule?.savings?.({ m, rates, sessions, target });
       const message =
         (target?.personal
@@ -279,6 +279,8 @@ function unitValuePerPoint(metric: MetricKey, m: Metrics, rates: BlendedRates): 
       return inputSide * rates.cacheRead;
     case 'floorShare':
       return (m.floorBaseTokens ?? 0) * rates.cacheRead;
+    case 'thrashShare':
+      return m.spendTokens * rates.spend;
     case 'abandonedShare':
       return m.spendTokens * rates.spend;
     default:
