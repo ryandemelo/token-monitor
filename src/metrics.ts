@@ -89,6 +89,10 @@ export interface Metrics {
   byActivity: Record<Activity, { tokens: number; share: number; events: number }>;
   byModel: Record<string, { tokens: number; costUsd: number }>;
   thinkToCodeRatio: number;
+  /** Testing share of all work spend: testing / (input + output), window-wide. */
+  testingShare: number;
+  /** Projects over the coding floor whose agent ran no test turns this window. */
+  untestedCodingProjects: number;
   /** Sessions long enough (≥ BLOAT_MIN_TURNS) to measure a context trend. */
   trendSessions: number;
   /** Trend sessions whose late-half context grew ≥2× without cache keeping pace. */
@@ -518,6 +522,7 @@ export function computeMetrics(
   const cascades = errorCascades(events);
   const cascadeTokens = cascades.reduce((t, c) => t + c.runTokens, 0);
   const cascadeExcessTokens = cascades.reduce((t, c) => t + c.excessTokens, 0);
+  const untestedProjects = untestedCodingOffenders(events);
   const floorTokens = floors.length >= FLOOR_MIN_SESSIONS ? median([...floors].sort((a, b) => a - b)) : 0;
   return {
     events: events.length,
@@ -538,6 +543,8 @@ export function computeMetrics(
     byActivity,
     byModel,
     thinkToCodeRatio: (byActivity.thinking.tokens + byActivity.exploration.tokens) / codingTokens,
+    testingShare: byActivity.testing.share,
+    untestedCodingProjects: untestedProjects.length,
     trendSessions,
     bloatedSessions,
     contextBloatShare: trendSessions ? bloatedSessions / trendSessions : 0,
@@ -796,4 +803,33 @@ export function groupBy<K extends keyof StoredEvent>(events: StoredEvent[], key:
     arr.push(e);
   }
   return map;
+}
+
+/** Projects under this coding spend are too small to judge for test coverage. */
+export const CODING_FLOOR_TOKENS = 100_000;
+/** A project at or below this testing share counts as "the agent never ran tests". */
+export const TESTING_SHARE_CEILING = 0.02;
+
+/**
+ * Coding-heavy projects whose agent transcript carries real coding spend while
+ * its testing share sits at or under TESTING_SHARE_CEILING. Spend everywhere
+ * here is input + output, matching spendTokens, so the numbers this reports
+ * are comparable with every other spend figure in the report.
+ */
+export function untestedCodingOffenders(events: StoredEvent[]): { project: string; codingTokens: number }[] {
+  const out: { project: string; codingTokens: number }[] = [];
+  for (const [project, evs] of groupBy(events, 'project')) {
+    let codingTokens = 0;
+    let testingTokens = 0;
+    for (const e of evs) {
+      if (e.activity === 'coding') codingTokens += e.input_tokens + e.output_tokens;
+      else if (e.activity === 'testing') testingTokens += e.input_tokens + e.output_tokens;
+    }
+    if (codingTokens < CODING_FLOOR_TOKENS) continue;
+    const total = codingTokens + testingTokens;
+    if ((total ? testingTokens / total : 0) <= TESTING_SHARE_CEILING) {
+      out.push({ project, codingTokens });
+    }
+  }
+  return out.sort((a, b) => b.codingTokens - a.codingTokens);
 }

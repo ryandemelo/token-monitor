@@ -12,6 +12,7 @@ import contextFloorCreep from './context-floor-creep.js';
 import abandonedWork from './abandoned-work.js';
 import errorCascade from './error-cascade.js';
 import megaTurns from './mega-turns.js';
+import untestedCoding from './untested-coding.js';
 
 /**
  * The rule registry.
@@ -38,6 +39,7 @@ export const RULES: Rule[] = [
   abandonedWork,
   errorCascade,
   megaTurns,
+  untestedCoding,
 ];
 
 export const RULE_BY_KEY: Map<string, Rule> = new Map(RULES.map((r) => [r.key, r]));

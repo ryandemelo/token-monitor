@@ -21,6 +21,7 @@ export type MetricKey =
   | 'cacheHitRatio'
   | 'reworkRatio'
   | 'thinkToCodeRatio'
+  | 'testingShare'
   | 'premiumShare'
   | 'contextBloatShare'
   | 'coldRestartShare'

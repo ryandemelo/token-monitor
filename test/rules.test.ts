@@ -101,6 +101,7 @@ test('registry: shipped rule keys and their order are stable', () => {
     'abandoned-work',
     'error-cascade',
     'mega-turns',
+    'untested-coding',
   ]);
 });
 
@@ -358,4 +359,59 @@ test('mergeMetrics recombines mega-turn counts over pooled spend, legacy exports
   const withLegacy = mergeMetrics([legacy as Metrics, grind]);
   assert.equal(withLegacy.megaTurns, 0);
   assert.equal(withLegacy.megaTurnShare, 0);
+});
+
+test('untested-coding: flags coding-heavy projects with no test turns, skips tested ones', () => {
+  const events: StoredEvent[] = [
+    // proj-a: 300k coding tokens across sessions, zero testing → offender
+    makeStored({ session_id: 'a1', project: 'proj-a', activity: 'coding', input_tokens: 150_000 }),
+    makeStored({ session_id: 'a2', project: 'proj-a', activity: 'coding', input_tokens: 150_000 }),
+    // proj-b: heavy coding but real testing turns → clean
+    makeStored({ session_id: 'b1', project: 'proj-b', activity: 'coding', input_tokens: 200_000 }),
+    makeStored({ session_id: 'b2', project: 'proj-b', activity: 'testing', input_tokens: 30_000 }),
+    // proj-c: tiny project under the floor → not judged
+    makeStored({ session_id: 'c1', project: 'proj-c', activity: 'coding', input_tokens: 5_000 }),
+  ];
+  const rule = RULE_BY_KEY.get('untested-coding')!;
+
+  const clause = rule.clause!({ events, rates: {
+    input: 0, cacheRead: 0, spend: 0, premium: 0, cheap: 0, extendedWritePremium: 0, estimated: false,
+  }, monthly: 1 });
+  assert.match(clause, /proj-a/);
+  assert.doesNotMatch(clause, /proj-b/);
+  assert.doesNotMatch(clause, /proj-c/);
+
+  // evidence scoring: proj-a's sessions score, a project with testing turns does not
+  const evsA = events.filter((e) => e.project === 'proj-a');
+  const s = { sessionId: 'a1', project: 'proj-a', date: '2026-06-01', m: computeMetrics(evsA), events: evsA, isSidechain: false };
+  assert.ok(rule.score!(s).score > 0);
+
+  // Evidence mirrors the detector: a session inside an offender project still
+  // scores even when that one session has no testing, and the label reflects
+  // the small tested share rather than claiming "no test turns."
+  const nearCeiling = [
+    makeStored({ session_id: 'd1', project: 'proj-d', activity: 'coding', input_tokens: 200_000 }),
+    makeStored({ session_id: 'd2', project: 'proj-d', activity: 'testing', input_tokens: 3_000 }),
+  ];
+  const sNear = {
+    sessionId: 'd1',
+    project: 'proj-d',
+    date: '2026-06-01',
+    m: computeMetrics(nearCeiling),
+    events: nearCeiling,
+    isSidechain: false,
+  };
+  const scored = rule.score!(sNear);
+  assert.ok(scored.score > 0);
+  assert.match(scored.label, /2% tests/);
+
+  // gate honesty: fires reads the per-project count off Metrics, so a window
+  // whose overall testing share is dragged up by other projects still names
+  // its untested one, and a window with none never claims one
+  const m = computeMetrics(events);
+  assert.ok(m.untestedCodingProjects >= 1);
+  assert.match(rule.fires!(m) ?? '', /no test turns/);
+  const clean = computeMetrics(events.filter((e) => e.project !== 'proj-a'));
+  assert.equal(clean.untestedCodingProjects, 0);
+  assert.equal(rule.fires!(clean), undefined);
 });
