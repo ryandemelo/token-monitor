@@ -36,6 +36,16 @@ export const BLOAT_GROWTH = 2; // late-half avg context ≥ 2× early half
 export const BLOAT_FRESH_SHARE = 0.3; // ...and ≥30% of late context is re-paid fresh
 
 /**
+ * Search loops (#88): the shortest run of consecutive exploration turns that
+ * still reads as "lost the thread" rather than "doing research". Ten straight
+ * read-only turns is well past any legitimate single question: by then the
+ * agent has re-read, re-globbed or re-searched several times over without
+ * writing, testing, planning or shipping anything in between. Below that a
+ * focused dig is exactly what an agent should be doing, so nothing fires.
+ */
+export const SEARCH_LOOP_MIN_RUN = 10;
+
+/**
  * The conversation a turn belongs to from the user's point of view: a subagent
  * run counts under the session that spawned it, everything else under itself.
  * `sessions` counts these, so a fan-out of 40 agents stays ONE session in the
@@ -92,6 +102,26 @@ export interface Metrics {
   /** Tokens on turns re-running a tool that errored in the immediately previous turn. */
   retryTokens: number;
   retryShare: number;
+  /**
+   * Search loops (#88): per main-loop session, maximal runs of consecutive
+   * `exploration` turns at least SEARCH_LOOP_MIN_RUN long. `searchLoopTokens`
+   * is their full spend (input + output); `searchLoopShare` puts that over all
+   * spend; `searchLoopLongestRun` (turns) is the evidence label.
+   */
+  searchLoopRuns: number;
+  searchLoopSessions: number;
+  searchLoopTurns: number;
+  searchLoopTokens: number;
+  searchLoopShare: number;
+  /** Turns in the single longest qualifying run across the window. */
+  searchLoopLongestRun: number;
+  /**
+   * Spend of the turns PAST the floor within each qualifying run: the only
+   * part the savings estimate prices. The first SEARCH_LOOP_MIN_RUN turns of
+   * every run are treated as legitimate research and never priced, which
+   * keeps the number conservative and easy to defend.
+   */
+  searchLoopExcessTokens: number;
   /**
    * Cache-write tokens on the 1-hour ephemeral tier, and their share of all
    * cache writes — main loop AND subagent runs, which routinely sit on
@@ -343,6 +373,8 @@ export function computeMetrics(
   let trendSessions = 0, bloatedSessions = 0;
   let coldRestartTurns = 0, coldRestartTokens = 0;
   let retryTokens = 0;
+  let searchLoopRuns = 0, searchLoopSessions = 0, searchLoopTurns = 0;
+  let searchLoopTokens = 0, searchLoopLongestRun = 0, searchLoopExcessTokens = 0;
   let carryTokens = 0;
   let floorTurns = 0, floorBaseTokens = 0;
   const floors: number[] = [];
@@ -431,6 +463,39 @@ export function computeMetrics(
       }
       prevErrTools = e.is_error ? new Set(tools) : undefined;
     }
+
+    // Search loops (#88): maximal runs of consecutive exploration turns in
+    // the MAIN loop. A subagent run is excluded on purpose: long unbroken
+    // reading is a subagent's JOB (an explore agent that pauses to edit is
+    // broken), so counting fan-outs would bury the signal and blame the
+    // brief, not the loop. Same mainRows filter as the hygiene signals above.
+    let runStart = -1;
+    let sessionLooped = false;
+    for (let i = 0; i <= mainRows.length; i++) {
+      const e = mainRows[i];
+      if (e && e.activity === 'exploration') {
+        if (runStart === -1) runStart = i;
+        continue;
+      }
+      if (runStart === -1) continue;
+      const len = i - runStart;
+      if (len >= SEARCH_LOOP_MIN_RUN) {
+        searchLoopRuns++;
+        searchLoopTurns += len;
+        searchLoopLongestRun = Math.max(searchLoopLongestRun, len);
+        sessionLooped = true;
+        // Full spend of every turn in the run, but only turns PAST the floor
+        // are priced as excess below: the first SEARCH_LOOP_MIN_RUN are
+        // treated as legitimate research, keeping savings conservative.
+        for (let j = runStart; j < i; j++) {
+          const t = mainRows[j].input_tokens + mainRows[j].output_tokens;
+          searchLoopTokens += t;
+          if (j >= runStart + SEARCH_LOOP_MIN_RUN) searchLoopExcessTokens += t;
+        }
+      }
+      runStart = -1;
+    }
+    if (sessionLooped) searchLoopSessions++;
   }
 
   const codingTokens = byActivity.coding.tokens || 1;
@@ -467,6 +532,13 @@ export function computeMetrics(
     premiumWasteShare: spendTokens ? premiumWasteTokens / spendTokens : 0,
     retryTokens,
     retryShare: spendTokens ? retryTokens / spendTokens : 0,
+    searchLoopRuns,
+    searchLoopSessions,
+    searchLoopTurns,
+    searchLoopTokens,
+    searchLoopShare: spendTokens ? searchLoopTokens / spendTokens : 0,
+    searchLoopLongestRun,
+    searchLoopExcessTokens,
     extendedCacheTokens,
     extendedCacheShare: cacheCreate ? extendedCacheTokens / cacheCreate : 0,
     extendedCacheSessions,
