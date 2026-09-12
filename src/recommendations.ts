@@ -267,6 +267,7 @@ function unitValuePerPoint(metric: MetricKey, m: Metrics, rates: BlendedRates): 
       return inputSide * (rates.input - rates.cacheRead);
     case 'reworkRatio':
     case 'retryShare':
+    case 'redundantReadShare':
       return m.spendTokens * rates.spend;
     case 'premiumShare':
     case 'premiumWasteShare':
