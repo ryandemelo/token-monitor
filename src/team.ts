@@ -7,6 +7,7 @@ import { computeMetrics, groupBy } from './metrics.js';
 import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
 import type { Activity } from './types.js';
+import { METRIC_DIRECTION } from './followthrough.js';
 import { fingerprint } from './sign.js';
 import type { Signature } from './sign.js';
 
@@ -374,6 +375,66 @@ export function rollupExports(
 export function dominantActivity(m: Metrics): Activity {
   return ACTIVITIES.reduce((best, a) =>
     m.byActivity[a].tokens > m.byActivity[best].tokens ? a : best,
+  );
+}
+
+/** Metrics compared side by side in the team percentile section. */
+const PERCENTILE_METRICS = [
+  'cacheHitRatio', 'reworkRatio', 'thinkToCodeRatio', 'coldRestartShare',
+] as const;
+
+type PercentileMetric = (typeof PERCENTILE_METRICS)[number];
+
+/**
+ * Average-rank percentile of `value` within `values`, from 0 to 100. Ties get
+ * the same percentile instead of depending on input order; this is display
+ * context, so a stable fractional rank is more honest than a forced order.
+ */
+function averageRankPercentile(values: number[], value: number): number {
+  const lessCount = values.filter((candidate) => candidate < value).length;
+  const equalCount = values.filter((candidate) => candidate === value).length;
+  return ((2 * lessCount + equalCount - 1) / (values.length - 1)) * 50;
+}
+
+export interface MemberPercentile {
+  name: string;
+  metric: PercentileMetric;
+  /** 0-100 percentile, with direction interpreted by the metric. */
+  percentile: number;
+}
+
+/**
+ * Outlier annotations for signed team members, using each metric's canonical
+ * improvement direction as the single source of truth for which tail is bad.
+ *
+ * Unsigned exports are excluded because their user@host identity can split one
+ * person across machines; per-person comparisons need --verify to mean "person".
+ * The middle stays unannotated on purpose: this is triage, not a leaderboard.
+ */
+export function memberOutlierPercentiles(
+  exports: SignedExport[],
+  keyring?: Record<string, string>,
+): MemberPercentile[] {
+  const signed = exports.filter((ex) => ex.sig?.publicKey !== undefined);
+  if (signed.length < 5) return [];
+
+  const names = new Map<SignedExport, string>(
+    signed.map((ex) => [ex, displayName(ex, keyring)]),
+  );
+  const out: MemberPercentile[] = [];
+  for (const metric of PERCENTILE_METRICS) {
+    const values = signed.map((ex) => ex.overall[metric]);
+    const badIsHigh = METRIC_DIRECTION[metric] === 'down';
+    for (const ex of signed) {
+      const percentile = averageRankPercentile(values, ex.overall[metric]);
+      if (badIsHigh ? percentile >= 75 : percentile <= 25) {
+        out.push({ name: names.get(ex)!, metric, percentile });
+      }
+    }
+  }
+  return out.sort((a, b) =>
+    a.name.localeCompare(b.name) ||
+    PERCENTILE_METRICS.indexOf(a.metric) - PERCENTILE_METRICS.indexOf(b.metric),
   );
 }
 

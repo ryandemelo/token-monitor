@@ -143,7 +143,7 @@ EOF
 token-monitor merge exports/*.json --team team.yaml
 ```
 
-The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill.
+The team report shows per-discipline rollups: tokens, cost, cache hit, rework, think:code ratio, dominant activity, and persona — so you can see *which discipline* needs which intervention, not just a total bill. With five or more verified members, it also flags individual metrics in the extreme tail as “furthest from team pattern”; unsigned merges stay at the safer group level.
 
 ### Org rollups (lead → org)
 

@@ -4,7 +4,15 @@ import type { StoredEvent } from './store.js';
 import { ACTIVITIES } from './types.js';
 import { assignPersona, generalRecommendations } from './personas.js';
 import type { SignedExport, TeamConfig, RollupAxis } from './team.js';
-import { mergeMetrics, rollupExports, dominantActivity, displayName, staleMembers } from './team.js';
+import {
+  mergeMetrics,
+  memberOutlierPercentiles,
+  rollupExports,
+  dominantActivity,
+  displayName,
+  staleMembers,
+} from './team.js';
+import type { MemberPercentile } from './team.js';
 import type { FollowRow } from './followthrough.js';
 import { fmtMetric } from './followthrough.js';
 import type { EnrichedRec } from './recommendations.js';
@@ -869,6 +877,37 @@ export function renderTeamReport(
     for (const a of ACTIVITIES) {
       if (m.byActivity[a].tokens === 0) continue;
       out.push(`    ${a.padEnd(13)} ${bar(m.byActivity[a].share)} ${(m.byActivity[a].share * 100).toFixed(1)}%`);
+    }
+  }
+
+  // Per-member outliers are deliberately separate from group rollups and are
+  // shown only when every member is verifiably identified. A percentile over
+  // unsigned user@host identities can compare one person's two machines.
+  const percentiles = memberOutlierPercentiles(exports, opts.keyring);
+  if (exports.every((e) => e.sig?.publicKey !== undefined)) {
+    if (exports.length >= 5 && percentiles.length > 0) {
+      const labels: Record<MemberPercentile['metric'], string> = {
+        cacheHitRatio: 'Cache hit',
+        reworkRatio: 'Rework',
+        thinkToCodeRatio: 'Think:code',
+        coldRestartShare: 'Cold restarts',
+      };
+      out.push(section('Furthest from team pattern'));
+      out.push(
+        table(
+          ['Member', 'Metric', 'Team pattern'],
+          percentiles.map(({ name, metric, percentile }) => [
+            name,
+            `${labels[metric]} — ⚠ p${percentile.toFixed(0)} of team`,
+            'coaching signal',
+          ]),
+        ),
+      );
+      out.push(
+        `  ${DIM}A coaching instrument, not a review weapon. The README's gaming paragraph applies doubly to per-person comparisons.${RESET}`,
+      );
+    } else if (exports.length >= 5) {
+      out.push(`  ${DIM}No member is beyond the outlier tails on the comparable team metrics.${RESET}`);
     }
   }
 

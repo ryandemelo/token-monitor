@@ -4,7 +4,16 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { computeMetrics } from '../src/metrics.js';
-import { mergeMetrics, parseTeamConfig, rollupExports, dominantActivity, identityOf, displayName, dedupeExports } from '../src/team.js';
+import {
+  mergeMetrics,
+  memberOutlierPercentiles,
+  parseTeamConfig,
+  rollupExports,
+  dominantActivity,
+  identityOf,
+  displayName,
+  dedupeExports,
+} from '../src/team.js';
 import type { ExportV1, SignedExport } from '../src/team.js';
 import { signObject, fingerprint } from '../src/sign.js';
 import { makeStored } from './helpers.js';
@@ -87,6 +96,58 @@ test('parseTeamConfig reads two-level teams.yaml and nested JSON', () => {
 function mkExport(user: string, m: ReturnType<typeof metricsOf>, generatedAt = 'now'): ExportV1 {
   return { version: 1, user, host: 'h', generatedAt, days: 30, overall: m, byProject: {} };
 }
+
+const keyDir = mkdtempSync(join(tmpdir(), 'tm-percentile-'));
+const keyring = { 'member-0': fingerprint(signObject(mkExport('member-0', metricsOf({ session_id: 'key-probe' })), keyDir).sig.publicKey) };
+
+function signedExport(
+  user: string,
+  overall: ReturnType<typeof metricsOf>,
+  keyDir: string,
+): SignedExport {
+  return signObject(mkExport(user, overall), keyDir);
+}
+
+test('memberOutlierPercentiles uses average ranks and only flags the bad tail', () => {
+  // Cache hit is good-high; rework is good-low. The same raw percentile must
+  // therefore flag the opposite ends of these two metrics.
+  const cache = [0.1, 0.2, 0.3, 0.4, 0.5];
+  const rework = [0.5, 0.4, 0.3, 0.2, 0.1];
+  const exports = cache.map((ratio, i) =>
+    signedExport(
+      `member-${i}`,
+      metricsOf({
+        session_id: `p${i}`,
+        activity: 'coding',
+        input_tokens: 1000 + i,
+        output_tokens: 100,
+        cache_read_tokens: (ratio * (1100 + i)) / (1 - ratio),
+      }),
+      keyDir,
+    ),
+  );
+  const annotated = exports.map((ex, i) => ({
+    ...ex,
+    overall: { ...ex.overall, reworkRatio: rework[i] },
+  }));
+
+  const outliers = memberOutlierPercentiles(annotated, keyring);
+  assert.ok(outliers.some((x) => x.name === 'member-0' && x.metric === 'cacheHitRatio' && x.percentile === 0));
+  assert.ok(outliers.some((x) => x.name === 'member-0' && x.metric === 'reworkRatio' && x.percentile === 100));
+  assert.equal(outliers.filter((x) => x.name === 'member-2').length, 0);
+});
+
+test('memberOutlierPercentiles suppresses small teams and unsigned merges', () => {
+  const four = Array.from({ length: 4 }, (_, i) =>
+    signedExport(`small-${i}`, metricsOf({ session_id: `small-${i}` }), keyDir),
+  );
+  const unsignedFive = Array.from({ length: 5 }, (_, i) =>
+    mkExport(`unsigned-${i}`, metricsOf({ session_id: `unsigned-${i}` })),
+  );
+
+  assert.deepEqual(memberOutlierPercentiles(four), []);
+  assert.deepEqual(memberOutlierPercentiles(unsignedFive), []);
+});
 
 test('rollupExports groups by discipline and by team', () => {
   const exports = [
